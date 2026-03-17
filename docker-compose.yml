@@ -1,0 +1,197 @@
+# AI 代码审查系统 - Docker Compose 配置
+# 包含所有服务：应用、Worker、轮询扫描器、MySQL、Redis
+
+version: '3.8'
+
+services:
+  # MySQL 数据库
+  mysql:
+    image: mysql:8.0
+    container_name: ai-review-mysql
+    restart: unless-stopped
+    environment:
+      MYSQL_ROOT_PASSWORD: ${DATABASE_PASSWORD:-root_password}
+      MYSQL_DATABASE: ${DATABASE_NAME:-ai_code_review}
+      MYSQL_USER: ${DATABASE_USER:-ai_review}
+      MYSQL_PASSWORD: ${DATABASE_PASSWORD:-ai_review_password}
+    ports:
+      - "${DATABASE_PORT:-3306}:3306"
+    volumes:
+      - mysql_data:/var/lib/mysql
+      - ./lib/db/migrations:/docker-entrypoint-initdb.d:ro
+    networks:
+      - ai-review-network
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-u", "root", "-p${DATABASE_PASSWORD:-root_password}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # Redis 缓存
+  redis:
+    image: redis:7-alpine
+    container_name: ai-review-redis
+    restart: unless-stopped
+    command: redis-server --requirepass ${REDIS_PASSWORD:-redis_password}
+    ports:
+      - "${REDIS_PORT:-6379}:6379"
+    volumes:
+      - redis_data:/data
+    networks:
+      - ai-review-network
+    healthcheck:
+      test: ["CMD", "redis-cli", "--raw", "incr", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # Next.js 应用服务器
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: ai-review-app
+    restart: unless-stopped
+    ports:
+      - "${APP_PORT:-3000}:3000"
+    environment:
+      - NODE_ENV=production
+      - DATABASE_HOST=mysql
+      - DATABASE_PORT=3306
+      - DATABASE_USER=${DATABASE_USER:-ai_review}
+      - DATABASE_PASSWORD=${DATABASE_PASSWORD:-ai_review_password}
+      - DATABASE_NAME=${DATABASE_NAME:-ai_code_review}
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+      - REDIS_PASSWORD=${REDIS_PASSWORD:-redis_password}
+      - AI_PROVIDER=${AI_PROVIDER:-openai}
+      - AI_API_KEY=${AI_API_KEY}
+      - AI_MODEL=${AI_MODEL:-gpt-4}
+      - AI_BASE_URL=${AI_BASE_URL}
+      - GIT_PROVIDER=${GIT_PROVIDER:-github}
+      - GIT_TOKEN=${GIT_TOKEN}
+      - GIT_WEBHOOK_SECRET=${GIT_WEBHOOK_SECRET}
+      - NEXT_PUBLIC_APP_URL=${NEXT_PUBLIC_APP_URL:-http://localhost:3000}
+      - JWT_SECRET=${JWT_SECRET}
+      - API_KEY_SECRET=${API_KEY_SECRET}
+      - LOG_LEVEL=${LOG_LEVEL:-info}
+      - LOG_FILE_ENABLED=true
+      - LOG_FILE_PATH=/app/logs
+    volumes:
+      - app_logs:/app/logs
+    networks:
+      - ai-review-network
+    depends_on:
+      mysql:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "node", "-e", "require('http').get('http://localhost:3000/api/health', (r) => {process.exit(r.statusCode === 200 ? 0 : 1)})"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+
+  # Worker 进程
+  worker:
+    build:
+      context: .
+      dockerfile: scripts/Dockerfile.worker
+    container_name: ai-review-worker
+    restart: unless-stopped
+    environment:
+      - NODE_ENV=production
+      - DATABASE_HOST=mysql
+      - DATABASE_PORT=3306
+      - DATABASE_USER=${DATABASE_USER:-ai_review}
+      - DATABASE_PASSWORD=${DATABASE_PASSWORD:-ai_review_password}
+      - DATABASE_NAME=${DATABASE_NAME:-ai_code_review}
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+      - REDIS_PASSWORD=${REDIS_PASSWORD:-redis_password}
+      - AI_PROVIDER=${AI_PROVIDER:-openai}
+      - AI_API_KEY=${AI_API_KEY}
+      - AI_MODEL=${AI_MODEL:-gpt-4}
+      - AI_BASE_URL=${AI_BASE_URL}
+      - GIT_PROVIDER=${GIT_PROVIDER:-github}
+      - GIT_TOKEN=${GIT_TOKEN}
+      - LOG_LEVEL=${LOG_LEVEL:-info}
+      - LOG_FILE_ENABLED=true
+      - LOG_FILE_PATH=/app/logs
+      - WORKER_CONCURRENCY=${WORKER_CONCURRENCY:-10}
+      - WORKER_POLL_INTERVAL=${WORKER_POLL_INTERVAL:-1000}
+    volumes:
+      - worker_logs:/app/logs
+    networks:
+      - ai-review-network
+    depends_on:
+      mysql:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "node", "/app/scripts/health-check.js"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 20s
+
+  # 轮询扫描器（可选）
+  polling-scanner:
+    build:
+      context: .
+      dockerfile: scripts/Dockerfile.polling-scanner
+    container_name: ai-review-scanner
+    restart: unless-stopped
+    environment:
+      - NODE_ENV=production
+      - DATABASE_HOST=mysql
+      - DATABASE_PORT=3306
+      - DATABASE_USER=${DATABASE_USER:-ai_review}
+      - DATABASE_PASSWORD=${DATABASE_PASSWORD:-ai_review_password}
+      - DATABASE_NAME=${DATABASE_NAME:-ai_code_review}
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+      - REDIS_PASSWORD=${REDIS_PASSWORD:-redis_password}
+      - GIT_PROVIDER=${GIT_PROVIDER:-github}
+      - GIT_TOKEN=${GIT_TOKEN}
+      - GIT_REPOSITORY=${GIT_REPOSITORY}
+      - GIT_BRANCH=${GIT_BRANCH:-uat}
+      - POLLING_INTERVAL=${POLLING_INTERVAL:-300}
+      - LOG_LEVEL=${LOG_LEVEL:-info}
+      - LOG_FILE_ENABLED=true
+      - LOG_FILE_PATH=/app/logs
+    volumes:
+      - scanner_logs:/app/logs
+    networks:
+      - ai-review-network
+    depends_on:
+      mysql:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "node", "/app/scripts/polling-scanner-health-check.js"]
+      interval: 60s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+    profiles:
+      - polling  # 使用 --profile polling 启动
+
+networks:
+  ai-review-network:
+    driver: bridge
+
+volumes:
+  mysql_data:
+    driver: local
+  redis_data:
+    driver: local
+  app_logs:
+    driver: local
+  worker_logs:
+    driver: local
+  scanner_logs:
+    driver: local

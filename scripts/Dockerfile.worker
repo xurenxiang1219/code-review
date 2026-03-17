@@ -1,0 +1,63 @@
+# AI 代码审查系统 - Queue Worker Docker 镜像
+
+FROM node:20-alpine AS base
+
+# 安装必要的系统依赖
+RUN apk add --no-cache \
+    bash \
+    curl \
+    git \
+    tini \
+    && rm -rf /var/cache/apk/*
+
+# 设置工作目录
+WORKDIR /app
+
+# 复制 package 文件
+COPY package.json pnpm-lock.yaml pnpm-workspace.yaml ./
+
+# 安装 pnpm
+RUN npm install -g pnpm@10.25.0
+
+# 安装依赖
+RUN pnpm install --frozen-lockfile --prod
+
+# 复制源代码
+COPY . .
+
+# 构建应用
+RUN pnpm build
+
+# 创建非 root 用户
+RUN addgroup -g 1001 -S nodejs && \
+    adduser -S worker -u 1001 -G nodejs
+
+# 创建日志目录
+RUN mkdir -p /app/logs && \
+    chown -R worker:nodejs /app/logs
+
+# 设置环境变量
+ENV NODE_ENV=production
+ENV LOG_LEVEL=info
+ENV WORKER_MAX_CONCURRENCY=10
+ENV WORKER_POLL_INTERVAL=1000
+ENV WORKER_TASK_TIMEOUT=600000
+ENV WORKER_SHUTDOWN_TIMEOUT=30000
+ENV WORKER_HEALTH_CHECK_INTERVAL=30000
+ENV WORKER_ENABLE_METRICS=true
+
+# 健康检查
+HEALTHCHECK --interval=30s --timeout=10s --start-period=60s --retries=3 \
+    CMD node -e "require('./scripts/health-check.js')" || exit 1
+
+# 切换到非 root 用户
+USER worker
+
+# 暴露端口（用于健康检查和指标）
+EXPOSE 3001
+
+# 使用 tini 作为 init 进程，确保信号正确传递
+ENTRYPOINT ["/sbin/tini", "--"]
+
+# 启动 Worker
+CMD ["pnpm", "tsx", "scripts/worker.ts"]

@@ -1,0 +1,55 @@
+# AI 代码审查系统 - Polling Scanner Docker 镜像
+
+FROM node:20-alpine
+
+# 设置工作目录
+WORKDIR /app
+
+# 安装系统依赖
+RUN apk add --no-cache \
+    git \
+    curl \
+    bash \
+    tzdata \
+    && rm -rf /var/cache/apk/*
+
+# 设置时区
+ENV TZ=Asia/Shanghai
+
+# 复制 package 文件
+COPY package.json pnpm-lock.yaml ./
+
+# 安装 pnpm 和依赖
+RUN npm install -g pnpm tsx \
+    && pnpm install --frozen-lockfile --prod
+
+# 复制应用代码
+COPY . .
+
+# 创建日志目录
+RUN mkdir -p logs
+
+# 创建非 root 用户
+RUN addgroup -g 1001 -S nodejs \
+    && adduser -S scanner -u 1001 -G nodejs
+
+# 设置文件权限
+RUN chown -R scanner:nodejs /app \
+    && chmod +x scripts/*.sh
+
+# 切换到非 root 用户
+USER scanner
+
+# 健康检查
+HEALTHCHECK --interval=60s --timeout=10s --start-period=30s --retries=3 \
+    CMD node scripts/health-check.js || exit 1
+
+# 暴露端口（如果需要）
+# EXPOSE 3000
+
+# 设置环境变量
+ENV NODE_ENV=production
+ENV LOG_LEVEL=info
+
+# 启动命令
+CMD ["tsx", "scripts/polling-scanner.ts"]

@@ -1,0 +1,123 @@
+version: '3.8'
+
+services:
+  # Polling Scanner 服务
+  polling-scanner:
+    build:
+      context: ..
+      dockerfile: scripts/Dockerfile.polling-scanner
+    container_name: ai-code-review-polling-scanner
+    restart: unless-stopped
+    env_file:
+      - polling-scanner.env
+    volumes:
+      - ../logs:/app/logs
+      - /etc/localtime:/etc/localtime:ro
+    networks:
+      - ai-code-review
+    depends_on:
+      - redis
+      - mysql
+    healthcheck:
+      test: ["CMD", "node", "scripts/health-check.js"]
+      interval: 60s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  # Redis 服务
+  redis:
+    image: redis:7-alpine
+    container_name: ai-code-review-redis
+    restart: unless-stopped
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+      - /etc/localtime:/etc/localtime:ro
+    command: redis-server --appendonly yes --maxmemory 512mb --maxmemory-policy allkeys-lru
+    networks:
+      - ai-code-review
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  # MySQL 服务
+  mysql:
+    image: mysql:8.0
+    container_name: ai-code-review-mysql
+    restart: unless-stopped
+    ports:
+      - "3306:3306"
+    environment:
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:-root_password}
+      MYSQL_DATABASE: ${MYSQL_DATABASE:-ai_code_review}
+      MYSQL_USER: ${MYSQL_USER:-ai_user}
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD:-ai_password}
+    volumes:
+      - mysql_data:/var/lib/mysql
+      - ../sql:/docker-entrypoint-initdb.d:ro
+      - /etc/localtime:/etc/localtime:ro
+    networks:
+      - ai-code-review
+    command: --default-authentication-plugin=mysql_native_password --character-set-server=utf8mb4 --collation-server=utf8mb4_unicode_ci
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-u", "root", "-p${MYSQL_ROOT_PASSWORD:-root_password}"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  # 监控服务（可选）
+  monitoring:
+    profiles: ["monitoring"]
+    build:
+      context: ..
+      dockerfile: scripts/Dockerfile.polling-scanner
+    container_name: ai-code-review-polling-monitor
+    restart: unless-stopped
+    env_file:
+      - polling-scanner.env
+    volumes:
+      - ../logs:/app/logs
+      - /etc/localtime:/etc/localtime:ro
+    networks:
+      - ai-code-review
+    depends_on:
+      - polling-scanner
+    command: ["bash", "scripts/monitor-polling-scanner.sh", "start"]
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+networks:
+  ai-code-review:
+    driver: bridge
+    name: ai-code-review-network
+
+volumes:
+  redis_data:
+    driver: local
+    name: ai-code-review-redis-data
+  mysql_data:
+    driver: local
+    name: ai-code-review-mysql-data

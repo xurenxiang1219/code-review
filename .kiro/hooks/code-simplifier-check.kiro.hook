@@ -1,0 +1,13 @@
+{
+  "enabled": true,
+  "name": "代码简化检查",
+  "description": "当 agent 完成执行后，自动按照 code-simplifier.md 规则检查并优化刚才修改的代码",
+  "version": "1",
+  "when": {
+    "type": "agentStop"
+  },
+  "then": {
+    "type": "askAgent",
+    "prompt": "请按照 .kiro/steering/code-simplifier.md 中的规则，检查并优化刚才修改的代码。重点关注：1) 代码简化与一致性优化 2) 结构与可读性优化 3) 遵循项目编码规范。如果有需要优化的地方，请直接进行修改。"
+  }
+}

@@ -1,0 +1,67 @@
+# 依赖
+node_modules
+.pnpm-store
+
+# Next.js
+.next
+out
+
+# 测试
+coverage
+.vitest
+
+# 日志
+logs
+*.log
+npm-debug.log*
+pnpm-debug.log*
+
+# 环境变量
+.env
+.env.local
+.env.*.local
+
+# IDE
+.vscode
+.idea
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Git
+.git
+.gitignore
+
+# 文档
+*.md
+!README.md
+docs
+
+# 测试文件
+tests
+*.test.ts
+*.test.tsx
+*.spec.ts
+*.spec.tsx
+
+# 配置文件
+.eslintrc.json
+.prettierrc
+.prettierignore
+vitest.config.ts
+
+# 临时文件
+tmp
+temp
+*.tmp
+
+# 构建产物
+dist
+build
+
+# Kiro
+.kiro

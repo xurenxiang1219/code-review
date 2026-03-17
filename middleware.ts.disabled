@@ -1,0 +1,460 @@
+import { NextRequest, NextResponse } from 'next/server';
+import { JWTUtils, PermissionUtils } from '@/lib/utils/auth';
+import { apiKeyManager } from '@/lib/services/api-key-manager';
+import { auditLogger } from '@/lib/services/audit-logger';
+import { 
+  createDefaultRateLimiter, 
+  createApiKeyRateLimiter, 
+  createWebhookRateLimiter 
+} from '@/lib/utils/rate-limit';
+import type { AuthUser, Permission, SecurityEventType } from '@/types/auth';
+import { v4 as uuidv4 } from 'uuid';
+
+/**
+ * 路径配置
+ */
+const PUBLIC_PATHS = [
+  '/',
+  '/api/health',
+  '/_next',
+  '/favicon.ico',
+];
+
+const SKIP_AUTH_PATHS = [
+  '/api/webhook', // Webhook 使用签名验证，不需要认证
+];
+
+const API_PATHS = [
+  '/api/',
+];
+
+/**
+ * 权限映射配置
+ */
+const PATH_PERMISSIONS: Record<string, Permission[]> = {
+  'GET:/api/reviews': ['review:read' as Permission],
+  'POST:/api/reviews': ['review:write' as Permission],
+  'PUT:/api/reviews': ['review:write' as Permission],
+  'DELETE:/api/reviews': ['review:delete' as Permission],
+  
+  'GET:/api/config': ['config:read' as Permission],
+  'PUT:/api/config': ['config:write' as Permission],
+  'POST:/api/config': ['config:write' as Permission],
+  'DELETE:/api/config': ['config:write' as Permission],
+  
+  'POST:/api/webhook': ['webhook:receive' as Permission],
+  
+  'GET:/api/health': ['health:check' as Permission],
+};
+
+/**
+ * 速率限制器实例
+ */
+const defaultRateLimiter = createDefaultRateLimiter();
+const apiKeyRateLimiter = createApiKeyRateLimiter();
+const webhookRateLimiter = createWebhookRateLimiter();
+
+/**
+ * Next.js 中间件主函数
+ * @param request - HTTP 请求对象
+ * @returns 响应或继续处理
+ */
+export async function middleware(request: NextRequest) {
+  const startTime = Date.now();
+  const requestId = uuidv4();
+  const { pathname } = request.nextUrl;
+  const method = request.method;
+  
+  const response = NextResponse.next();
+  response.headers.set('X-Request-ID', requestId);
+
+  try {
+    if (isPublicPath(pathname)) {
+      return addSecurityHeaders(response);
+    }
+
+    if (isSkipAuthPath(pathname)) {
+      return await handleSkipAuthPath(request, response, requestId);
+    }
+
+    if (!isApiPath(pathname)) {
+      return addSecurityHeaders(response);
+    }
+
+    const authResult = await authenticateRequest(request);
+    if (!authResult.success) {
+      return await handleAuthFailure(request, authResult, requestId);
+    }
+
+    const user = authResult.user!;
+
+    const requiredPermissions = getRequiredPermissions(method, pathname);
+    if (requiredPermissions.length > 0) {
+      const hasPermission = PermissionUtils.hasAnyPermission(user, requiredPermissions);
+      if (!hasPermission) {
+        return await handlePermissionDenied(request, user, requiredPermissions, requestId);
+      }
+    }
+
+    const rateLimitResult = await checkRateLimit(request, user);
+    if (!rateLimitResult.allowed) {
+      return await handleRateLimitExceeded(request, user, rateLimitResult, requestId);
+    }
+
+    response.headers.set('X-User-ID', user.id);
+    response.headers.set('X-User-Role', user.role);
+    response.headers.set('X-Auth-Method', user.authMethod);
+
+    await logSuccessfulAccess(request, user, requestId, startTime);
+
+    return addSecurityHeaders(response);
+
+  } catch (error) {
+    console.error('中间件执行错误:', error);
+    
+    await auditLogger.logSecurityEvent({
+      type: 'suspicious_activity' as SecurityEventType,
+      severity: 'medium',
+      description: `中间件执行异常: ${error instanceof Error ? error.message : String(error)}`,
+      ip: getClientIP(request),
+      userAgent: request.headers.get('user-agent') || '',
+      path: pathname,
+      metadata: { error: String(error) },
+    });
+
+    return new NextResponse('Internal Server Error', { 
+      status: 500,
+      headers: { 'X-Request-ID': requestId }
+    });
+  }
+}
+/**
+ * 认证请求
+ * @param request - HTTP 请求对象
+ * @returns 认证结果
+ */
+async function authenticateRequest(request: NextRequest) {
+  const authHeader = request.headers.get('authorization');
+  if (authHeader?.startsWith('Bearer ')) {
+    const token = authHeader.substring(7);
+    return JWTUtils.verifyToken(token);
+  }
+
+  const apiKey = request.headers.get('x-api-key');
+  if (apiKey) {
+    return await apiKeyManager.verifyApiKey(apiKey);
+  }
+
+  return {
+    success: false,
+    error: '缺少认证信息',
+    errorCode: 'MISSING_AUTH',
+  };
+}
+
+/**
+ * 检查是否为公开路径
+ * @param pathname - 路径
+ * @returns 是否为公开路径
+ */
+function isPublicPath(pathname: string): boolean {
+  return PUBLIC_PATHS.some(path => pathname.startsWith(path));
+}
+
+/**
+ * 检查是否跳过认证的路径
+ * @param pathname - 路径
+ * @returns 是否跳过认证
+ */
+function isSkipAuthPath(pathname: string): boolean {
+  return SKIP_AUTH_PATHS.some(path => pathname.startsWith(path));
+}
+
+/**
+ * 检查是否为 API 路径
+ * @param pathname - 路径
+ * @returns 是否为 API 路径
+ */
+function isApiPath(pathname: string): boolean {
+  return API_PATHS.some(path => pathname.startsWith(path));
+}
+
+/**
+ * 获取所需权限
+ * @param method - HTTP 方法
+ * @param pathname - 路径
+ * @returns 权限列表
+ */
+function getRequiredPermissions(method: string, pathname: string): Permission[] {
+  const key = `${method}:${pathname}`;
+  return PATH_PERMISSIONS[key] || [];
+}
+
+/**
+ * 获取客户端 IP
+ * @param request - HTTP 请求对象
+ * @returns 客户端 IP
+ */
+function getClientIP(request: NextRequest): string {
+  const forwardedFor = request.headers.get('x-forwarded-for');
+  const realIp = request.headers.get('x-real-ip');
+  
+  if (forwardedFor) {
+    return forwardedFor.split(',')[0].trim();
+  }
+  
+  return realIp || 'unknown';
+}
+
+/**
+ * 检查速率限制
+ * @param request - HTTP 请求对象
+ * @param user - 用户信息
+ * @returns 速率限制结果
+ */
+async function checkRateLimit(request: NextRequest, user: AuthUser) {
+  const pathname = request.nextUrl.pathname;
+  
+  // Webhook 路径使用专门的限制器
+  if (pathname.startsWith('/api/webhook')) {
+    const key = webhookRateLimiter.config.keyGenerator?.(request as any) || 'default';
+    return await webhookRateLimiter.checkLimit(key);
+  }
+  
+  // API Key 认证使用更高的限制
+  if (user.authMethod === 'apikey') {
+    const key = apiKeyRateLimiter.config.keyGenerator?.(request as any) || user.id;
+    return await apiKeyRateLimiter.checkLimit(key);
+  }
+  
+  // 默认限制器
+  const key = defaultRateLimiter.config.keyGenerator?.(request as any) || user.id;
+  return await defaultRateLimiter.checkLimit(key);
+}
+
+/**
+ * 处理跳过认证的路径
+ * @param request - HTTP 请求对象
+ * @param response - HTTP 响应对象
+ * @param requestId - 请求 ID
+ * @returns 响应
+ */
+async function handleSkipAuthPath(
+  request: NextRequest,
+  response: NextResponse,
+  requestId: string
+) {
+  // 对 Webhook 路径进行速率限制
+  if (request.nextUrl.pathname.startsWith('/api/webhook')) {
+    const key = webhookRateLimiter.config.keyGenerator?.(request as any) || 'default';
+    const rateLimitResult = await webhookRateLimiter.checkLimit(key);
+    
+    if (!rateLimitResult.allowed) {
+      await auditLogger.logSecurityEvent({
+        type: 'rate_limit_exceeded' as SecurityEventType,
+        severity: 'medium',
+        description: 'Webhook 速率限制超出',
+        ip: getClientIP(request),
+        userAgent: request.headers.get('user-agent') || '',
+        path: request.nextUrl.pathname,
+        metadata: { 
+          limit: rateLimitResult.limit,
+          resetTime: rateLimitResult.resetTime 
+        },
+      });
+
+      return new NextResponse('Rate limit exceeded', {
+        status: 429,
+        headers: {
+          'X-Request-ID': requestId,
+          'X-RateLimit-Limit': rateLimitResult.limit.toString(),
+          'X-RateLimit-Remaining': rateLimitResult.remaining.toString(),
+          'X-RateLimit-Reset': rateLimitResult.resetTime.toString(),
+        },
+      });
+    }
+  }
+
+  return addSecurityHeaders(response);
+}
+
+/**
+ * 处理认证失败
+ * @param request - HTTP 请求对象
+ * @param authResult - 认证结果
+ * @param requestId - 请求 ID
+ * @returns 响应
+ */
+async function handleAuthFailure(
+  request: NextRequest,
+  authResult: any,
+  requestId: string
+) {
+  const eventType = authResult.errorCode === 'TOKEN_EXPIRED' 
+    ? 'expired_token' as SecurityEventType
+    : 'invalid_token' as SecurityEventType;
+
+  await auditLogger.logSecurityEvent({
+    type: eventType,
+    severity: 'low',
+    description: authResult.error || '认证失败',
+    ip: getClientIP(request),
+    userAgent: request.headers.get('user-agent') || '',
+    path: request.nextUrl.pathname,
+    metadata: { errorCode: authResult.errorCode },
+  });
+
+  return new NextResponse('Unauthorized', {
+    status: 401,
+    headers: {
+      'X-Request-ID': requestId,
+      'WWW-Authenticate': 'Bearer realm="API", error="invalid_token"',
+    },
+  });
+}
+
+/**
+ * 处理权限不足
+ * @param request - HTTP 请求对象
+ * @param user - 用户信息
+ * @param requiredPermissions - 所需权限
+ * @param requestId - 请求 ID
+ * @returns 响应
+ */
+async function handlePermissionDenied(
+  request: NextRequest,
+  user: AuthUser,
+  requiredPermissions: Permission[],
+  requestId: string
+) {
+  await auditLogger.logSecurityEvent({
+    type: 'insufficient_permissions' as SecurityEventType,
+    severity: 'medium',
+    description: '权限不足',
+    ip: getClientIP(request),
+    userAgent: request.headers.get('user-agent') || '',
+    path: request.nextUrl.pathname,
+    userId: user.id,
+    metadata: { 
+      requiredPermissions,
+      userPermissions: user.permissions,
+      userRole: user.role 
+    },
+  });
+
+  return new NextResponse('Forbidden', {
+    status: 403,
+    headers: { 'X-Request-ID': requestId },
+  });
+}
+
+/**
+ * 处理速率限制超出
+ * @param request - HTTP 请求对象
+ * @param user - 用户信息
+ * @param rateLimitResult - 速率限制结果
+ * @param requestId - 请求 ID
+ * @returns 响应
+ */
+async function handleRateLimitExceeded(
+  request: NextRequest,
+  user: AuthUser,
+  rateLimitResult: any,
+  requestId: string
+) {
+  await auditLogger.logSecurityEvent({
+    type: 'rate_limit_exceeded' as SecurityEventType,
+    severity: 'low',
+    description: '速率限制超出',
+    ip: getClientIP(request),
+    userAgent: request.headers.get('user-agent') || '',
+    path: request.nextUrl.pathname,
+    userId: user.id,
+    metadata: { 
+      limit: rateLimitResult.limit,
+      resetTime: rateLimitResult.resetTime 
+    },
+  });
+
+  return new NextResponse('Rate limit exceeded', {
+    status: 429,
+    headers: {
+      'X-Request-ID': requestId,
+      'X-RateLimit-Limit': rateLimitResult.limit.toString(),
+      'X-RateLimit-Remaining': rateLimitResult.remaining.toString(),
+      'X-RateLimit-Reset': rateLimitResult.resetTime.toString(),
+    },
+  });
+}
+
+/**
+ * 记录成功访问日志
+ * @param request - HTTP 请求对象
+ * @param user - 用户信息
+ * @param requestId - 请求 ID
+ * @param startTime - 开始时间
+ */
+async function logSuccessfulAccess(
+  request: NextRequest,
+  user: AuthUser,
+  requestId: string,
+  startTime: number
+) {
+  const duration = Date.now() - startTime;
+  
+  await auditLogger.logAudit({
+    user,
+    action: 'access',
+    resource: 'api',
+    method: request.method,
+    path: request.nextUrl.pathname,
+    ip: getClientIP(request),
+    userAgent: request.headers.get('user-agent') || '',
+    requestId,
+    success: true,
+    statusCode: 200,
+    duration,
+  });
+}
+
+/**
+ * 添加安全响应头
+ * @param response - HTTP 响应对象
+ * @returns 添加安全头后的响应
+ */
+function addSecurityHeaders(response: NextResponse): NextResponse {
+  response.headers.set('X-Content-Type-Options', 'nosniff');
+  response.headers.set('X-Frame-Options', 'DENY');
+  response.headers.set('X-XSS-Protection', '1; mode=block');
+  response.headers.set('Referrer-Policy', 'strict-origin-when-cross-origin');
+  response.headers.set('Permissions-Policy', 'camera=(), microphone=(), geolocation=()');
+  
+  const allowedOrigins = process.env.CORS_ALLOWED_ORIGINS?.split(',') || ['*'];
+  if (allowedOrigins.includes('*')) {
+    response.headers.set('Access-Control-Allow-Origin', '*');
+  } else {
+    response.headers.set('Access-Control-Allow-Origin', allowedOrigins[0]);
+  }
+  
+  response.headers.set('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
+  response.headers.set('Access-Control-Allow-Headers', 'Content-Type, Authorization, X-API-Key');
+  response.headers.set('Access-Control-Max-Age', '86400');
+
+  return response;
+}
+
+/**
+ * 中间件配置
+ */
+export const config = {
+  matcher: [
+    /*
+     * 匹配所有请求路径，除了：
+     * - api (API routes)
+     * - _next/static (static files)
+     * - _next/image (image optimization files)
+     * - favicon.ico (favicon file)
+     */
+    '/((?!_next/static|_next/image|favicon.ico).*)',
+  ],
+};

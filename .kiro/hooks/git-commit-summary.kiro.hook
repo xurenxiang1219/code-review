@@ -1,0 +1,13 @@
+{
+  "enabled": true,
+  "name": "生成 Git 提交描述",
+  "description": "分析当前 Git 暂存区的变更，自动生成简洁的中文提交描述",
+  "version": "1",
+  "when": {
+    "type": "userTriggered"
+  },
+  "then": {
+    "type": "askAgent",
+    "prompt": "请分析当前 Git 暂存区的变更（使用 git diff --cached），生成一个简洁的中文提交描述。\n\n要求：\n1. 使用约定式提交格式：`类型(范围): 描述`\n2. 类型使用中文：feat（新功能）、fix（修复）、refactor（重构）、style（样式）、docs（文档）、perf（性能）、test（测试）\n3. 描述要简洁明了，不超过 50 字\n4. 如果有多个重要变更，提供 2-3 个备选描述\n5. 直接输出提交描述，不要额外解释\n\n示例格式：\n```\nrefactor(filter): 优化代码结构和可读性\n```\n\n或提供备选：\n```\n选项 1: refactor(download): 简化状态判断逻辑\n选项 2: refactor(download): 移除冗余辅助方法\n选项 3: refactor: 优化代码可读性和一致性\n```"
+  }
+}

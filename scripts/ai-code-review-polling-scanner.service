@@ -1,0 +1,47 @@
+[Unit]
+Description=AI Code Review Polling Scanner
+Documentation=https://github.com/your-org/ai-code-review-system
+After=network.target mysql.service redis.service
+Wants=mysql.service redis.service
+
+[Service]
+Type=simple
+User=ai-scanner
+Group=ai-scanner
+WorkingDirectory=/opt/ai-code-review-system
+ExecStart=/opt/ai-code-review-system/scripts/start-polling-scanner.sh start
+ExecStop=/opt/ai-code-review-system/scripts/start-polling-scanner.sh stop
+ExecReload=/bin/kill -HUP $MAINPID
+
+# 环境变量文件
+EnvironmentFile=-/opt/ai-code-review-system/.env.polling-scanner
+
+# 重启策略
+Restart=always
+RestartSec=10
+StartLimitInterval=60
+StartLimitBurst=3
+
+# 资源限制
+LimitNOFILE=65536
+LimitNPROC=4096
+
+# 安全设置
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/opt/ai-code-review-system/logs
+
+# 日志设置
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=ai-code-review-polling-scanner
+
+# 进程管理
+KillMode=mixed
+KillSignal=SIGTERM
+TimeoutStopSec=30
+
+[Install]
+WantedBy=multi-user.target

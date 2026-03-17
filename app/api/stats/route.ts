@@ -1,12 +1,15 @@
-import { NextResponse } from 'next/server';
+import { NextRequest, NextResponse } from 'next/server';
 import { reviewRepository } from '@/lib/db/repositories/review';
 import { ApiCode } from '@/lib/constants/api-codes';
 import { logger } from '@/lib/utils/logger';
+import { authenticateApiRouteSimple } from '@/lib/middleware/api-auth-simple';
+import { Permission } from '@/types/auth';
+import '@/lib/init/auth';
 
 /**
- * 公开统计数据 API
+ * 系统统计数据 API
  * 
- * 提供系统基础统计信息，无需认证
+ * 提供系统统计信息，需要认证
  */
 
 /**
@@ -14,15 +17,24 @@ import { logger } from '@/lib/utils/logger';
  * 
  * 获取系统统计数据
  */
-export async function GET() {
-  const requestId = crypto.randomUUID();
+export async function GET(request: NextRequest) {
+  const auth = await authenticateApiRouteSimple(request, {
+    requiredPermissions: [Permission.REVIEW_READ],
+  });
+  
+  if (auth instanceof NextResponse) {
+    return auth;
+  }
+
+  const { requestId } = auth;
   const reqLogger = logger.child({ 
     requestId, 
     endpoint: '/api/stats',
     method: 'GET',
+    userId: auth.user.id,
   });
 
-  reqLogger.info('获取公开统计数据请求');
+  reqLogger.info('获取统计数据请求');
 
   try {
     const [stats, todayStats, firstReview] = await Promise.all([
@@ -48,7 +60,7 @@ export async function GET() {
       systemUptime,
     };
 
-    reqLogger.info('公开统计数据查询成功', responseData);
+    reqLogger.info('统计数据查询成功', responseData);
     
     return NextResponse.json({
       code: ApiCode.SUCCESS,

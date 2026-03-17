@@ -17,10 +17,13 @@ export function ReviewFocusSection({ value, onChange, error }: ReviewFocusSectio
     { id: 'documentation', label: '文档', description: '检查注释和文档完整性' },
   ];
 
+  // 确保 value 始终为数组，避免空值错误
+  const safeValue = value || [];
+
   const handleToggle = (focusId: string) => {
-    const newValue = value.includes(focusId)
-      ? value.filter(id => id !== focusId)
-      : [...value, focusId];
+    const newValue = safeValue.includes(focusId)
+      ? safeValue.filter(id => id !== focusId)
+      : [...safeValue, focusId];
     onChange(newValue);
   };
 
@@ -36,7 +39,7 @@ export function ReviewFocusSection({ value, onChange, error }: ReviewFocusSectio
               <input
                 id={focus.id}
                 type="checkbox"
-                checked={value.includes(focus.id)}
+                checked={safeValue.includes(focus.id)}
                 onChange={() => handleToggle(focus.id)}
                 className="focus:ring-gray-900 h-4 w-4 text-gray-900 border-gray-300 rounded"
               />

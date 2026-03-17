@@ -1,69 +1,85 @@
 'use client';
 
-import { useState, useEffect } from 'react';
+import { useState } from 'react';
 import { ConfigForm } from '@/components/config/ConfigForm';
+import React from 'react';
 import { FullReviewConfig } from '@/lib/db/repositories/config';
+import { useAuth } from '@/lib/contexts/auth-context';
+import { LoadingSpinner } from '@/components/ui/LoadingSpinner';
+import { authApiClient } from '@/lib/utils/auth-api-client';
+import { FormEvent } from 'react';
 
 // 常量定义
 const NOT_FOUND_CODE = 3005;
 const EMPTY_REPO_ERROR = '请输入仓库名称';
 
-/**
- * 验证仓库名称
- * @param repo - 仓库名称
- * @returns 验证结果和错误消息
- */
-const validateRepository = (repo: string) => {
-  const trimmed = repo.trim();
-  return {
-    isValid: Boolean(trimmed),
-    trimmed,
-    error: trimmed ? null : EMPTY_REPO_ERROR
-  };
+// 状态配置常量
+const STATUS_CONFIG = {
+  enabled: {
+    className: 'bg-green-100 text-green-800',
+    text: '轮询启用'
+  },
+  disabled: {
+    className: 'bg-blue-100 text-blue-800', 
+    text: '手动触发'
+  }
 };
 
 /**
  * 配置管理页面
- * 
- * 功能：
- * - 显示当前配置
- * - 编辑和保存配置
- * - 处理加载状态和错误
- * - 响应式设计
  */
 export default function ConfigPage() {
   const [config, setConfig] = useState<FullReviewConfig | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [repository, setRepository] = useState<string>('');
+  const [existingConfigs, setExistingConfigs] = useState<FullReviewConfig[]>([]);
+  const [loadingConfigs, setLoadingConfigs] = useState(false);
+  const { isAuthenticated, isLoading } = useAuth();
 
   /**
-   * 处理API调用的通用错误处理
-   * @param err - 错误对象
-   * @param context - 操作上下文描述
-   * @param repo - 仓库名称
+   * 验证仓库名称
    */
-  const handleApiError = (err: unknown, context: string, repo: string) => {
-    const errorMessage = err instanceof Error ? err.message : `${context}失败`;
-    setError(errorMessage);
-    console.error(`Failed to ${context}`, { repository: repo, error: errorMessage });
+  const validateRepository = (repo: string) => {
+    const trimmed = repo.trim();
+    return {
+      isValid: Boolean(trimmed),
+      trimmed,
+      error: trimmed ? null : EMPTY_REPO_ERROR
+    };
   };
 
   /**
-   * 构建API URL
-   * @param repo - 仓库名称
-   * @returns 完整的API URL
+   * 处理API调用的通用错误处理
    */
-  const buildApiUrl = (repo: string) => `/api/config/init?repository=${encodeURIComponent(repo)}`;
+  const handleApiError = (err: unknown, context: string) => {
+    const errorMessage = err instanceof Error ? err.message : `${context}失败`;
+    setError(errorMessage);
+    console.error(`${context}失败:`, err);
+  };
+
+  /**
+   * 加载所有已配置的仓库
+   */
+  const loadExistingConfigs = async () => {
+    try {
+      setLoadingConfigs(true);
+      const result = await authApiClient.get<FullReviewConfig[]>('/api/config/all');
+      setExistingConfigs(result);
+    } catch (err) {
+      console.error('加载已配置仓库失败:', err);
+    } finally {
+      setLoadingConfigs(false);
+    }
+  };
+
   /**
    * 加载仓库配置
-   * @param repo - 仓库名称
    */
   const loadConfig = async (repo: string) => {
     const validation = validateRepository(repo);
     if (!validation.isValid) {
       setError(validation.error);
-      setLoading(false);
       return;
     }
 
@@ -71,20 +87,16 @@ export default function ConfigPage() {
       setLoading(true);
       setError(null);
 
-      const response = await fetch(buildApiUrl(validation.trimmed));
-      const result = await response.json();
-
-      if (!response.ok) {
-        if (result.code === NOT_FOUND_CODE) {
-          await createDefaultConfig(validation.trimmed);
-          return;
-        }
-        throw new Error(result.msg || '加载配置失败');
+      const result = await authApiClient.get<FullReviewConfig>('/api/config', { 
+        repository: validation.trimmed 
+      });
+      setConfig(result);
+    } catch (err: any) {
+      if (err.code === NOT_FOUND_CODE) {
+        await createDefaultConfig(validation.trimmed);
+        return;
       }
-
-      setConfig(result.data);
-    } catch (err) {
-      handleApiError(err, 'load config', validation.trimmed);
+      handleApiError(err, '加载配置');
     } finally {
       setLoading(false);
     }
@@ -92,27 +104,20 @@ export default function ConfigPage() {
 
   /**
    * 创建默认配置
-   * @param repo - 仓库名称
    */
   const createDefaultConfig = async (repo: string) => {
     try {
-      const response = await fetch(buildApiUrl(repo), {
-        method: 'POST',
+      const result = await authApiClient.post<FullReviewConfig>('/api/config', null, { 
+        repository: repo 
       });
-      const result = await response.json();
-
-      if (!response.ok) {
-        throw new Error(result.msg || '创建默认配置失败');
-      }
-
-      setConfig(result.data);
+      setConfig(result);
     } catch (err) {
-      handleApiError(err, 'create default config', repo);
+      handleApiError(err, '创建默认配置');
     }
   };
+
   /**
    * 保存配置更新
-   * @param updatedConfig - 更新的配置数据
    */
   const handleSaveConfig = async (updatedConfig: Partial<FullReviewConfig>) => {
     const validation = validateRepository(repository);
@@ -123,39 +128,52 @@ export default function ConfigPage() {
 
     try {
       setError(null);
-
-      const response = await fetch(buildApiUrl(validation.trimmed), {
-        method: 'PUT',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify(updatedConfig),
+      const result = await authApiClient.put<FullReviewConfig>('/api/config', updatedConfig, {
+        repository: validation.trimmed
       });
 
-      const result = await response.json();
-
-      if (!response.ok) {
-        throw new Error(result.msg || '保存配置失败');
-      }
-
-      setConfig(result.data);
-
-      // 触发配置保存成功事件
-      const successEvent = new CustomEvent('config-saved', {
+      setConfig(result);
+      window.dispatchEvent(new CustomEvent('config-saved', {
         detail: { message: '配置保存成功' }
-      });
-      window.dispatchEvent(successEvent);
-
+      }));
     } catch (err) {
-      handleApiError(err, 'save config', validation.trimmed);
+      handleApiError(err, '保存配置');
     }
   };
 
   /**
-   * 处理仓库表单提交
-   * @param e - 表单提交事件
+   * 删除配置
+   * @param repoName - 仓库名称
    */
-  const handleRepositorySubmit = (e: React.FormEvent) => {
+  const handleDeleteConfig = async (repoName: string) => {
+    const confirmMessage = `确定要删除仓库 "${repoName}" 的配置吗？此操作不可撤销。`;
+    
+    if (!confirm(confirmMessage)) {
+      return;
+    }
+
+    try {
+      setError(null);
+      await authApiClient.delete('/api/config', { repository: repoName });
+      
+      // 刷新配置列表
+      await loadExistingConfigs();
+      
+      // 如果删除的是当前配置，清空当前状态
+      if (repoName === repository) {
+        setConfig(null);
+        setRepository('');
+      }
+      
+      window.dispatchEvent(new CustomEvent('config-deleted', {
+        detail: { message: '配置删除成功' }
+      }));
+    } catch (err) {
+      handleApiError(err, '删除配置');
+    }
+  };
+
+  const handleRepositorySubmit = (e: FormEvent<HTMLFormElement>) => {
     e.preventDefault();
     const validation = validateRepository(repository);
     if (!validation.isValid) {
@@ -164,6 +182,26 @@ export default function ConfigPage() {
     }
     loadConfig(validation.trimmed);
   };
+
+  // 组件加载时获取已配置的仓库列表
+  React.useEffect(() => {
+    if (isAuthenticated) {
+      loadExistingConfigs();
+    }
+  }, [isAuthenticated]);
+
+  if (isLoading) {
+    return (
+      <div className="min-h-screen flex items-center justify-center">
+        <LoadingSpinner size="lg" text="加载中..." />
+      </div>
+    );
+  }
+
+  if (!isAuthenticated) {
+    return null;
+  }
+
   return (
     <div className="min-h-screen bg-gray-50 py-8">
       <div className="max-w-4xl mx-auto px-4 sm:px-6 lg:px-8">
@@ -176,6 +214,62 @@ export default function ConfigPage() {
 
         <div className="bg-white shadow rounded-lg p-6 mb-6">
           <h2 className="text-base font-semibold text-gray-900 mb-4">选择仓库</h2>
+          
+          {/* 已配置仓库列表 */}
+          {existingConfigs.length > 0 && (
+            <div className="mb-6">
+              <h3 className="text-sm font-medium text-gray-700 mb-3">已配置的仓库</h3>
+              <div className="grid grid-cols-1 gap-2 sm:grid-cols-2 lg:grid-cols-3">
+                {existingConfigs.map((existingConfig) => (
+                  <div
+                    key={existingConfig.id}
+                    className="relative p-3 border border-gray-200 rounded-lg hover:border-gray-300 hover:bg-gray-50 transition-colors"
+                  >
+                    <button
+                      onClick={() => {
+                        setRepository(existingConfig.repository);
+                        setConfig(existingConfig);
+                        setError(null);
+                      }}
+                      className="text-left w-full"
+                    >
+                      <div className="text-sm font-medium text-gray-900 truncate">
+                        {existingConfig.repository}
+                      </div>
+                      <div className="text-xs text-gray-500 mt-1">
+                        更新于 {new Date(existingConfig.updatedAt).toLocaleDateString()}
+                      </div>
+                      <div className="text-xs mt-1">
+                        <span className={`inline-flex items-center px-2 py-0.5 rounded text-xs font-medium ${
+                          existingConfig.pollingEnabled 
+                            ? STATUS_CONFIG.enabled.className
+                            : STATUS_CONFIG.disabled.className
+                        }`}>
+                          {existingConfig.pollingEnabled ? STATUS_CONFIG.enabled.text : STATUS_CONFIG.disabled.text}
+                        </span>
+                      </div>
+                    </button>
+                    <button
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        handleDeleteConfig(existingConfig.repository);
+                      }}
+                      className="absolute top-2 right-2 p-1 text-gray-400 hover:text-red-600 transition-colors"
+                      title="删除配置"
+                    >
+                      <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
+                      </svg>
+                    </button>
+                  </div>
+                ))}
+              </div>
+              <div className="mt-4 border-t border-gray-200 pt-4">
+                <h3 className="text-sm font-medium text-gray-700 mb-2">或添加新仓库</h3>
+              </div>
+            </div>
+          )}
+          
           <form onSubmit={handleRepositorySubmit} className="flex gap-4">
             <div className="flex-1">
               <label htmlFor="repository" className="sr-only">
@@ -186,7 +280,7 @@ export default function ConfigPage() {
                 id="repository"
                 value={repository}
                 onChange={(e) => setRepository(e.target.value)}
-                placeholder="owner/repo-name"
+                placeholder="owner/repo-name 或 https://github.com/owner/repo.git"
                 className="block w-full rounded border-gray-300 shadow-sm text-sm focus:border-gray-900 focus:ring-gray-900"
                 disabled={loading}
               />
@@ -200,6 +294,7 @@ export default function ConfigPage() {
             </button>
           </form>
         </div>
+
         {error && (
           <div className="bg-red-50 border border-red-200 rounded p-4 mb-6">
             <div className="flex">
@@ -239,6 +334,7 @@ export default function ConfigPage() {
             repository={repository}
           />
         )}
+
         {!config && !loading && !error && repository && (
           <div className="bg-white shadow rounded-lg p-6">
             <div className="text-center">

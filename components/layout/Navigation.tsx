@@ -4,6 +4,8 @@ import React, { useState } from 'react';
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
 import { cn } from '@/lib/utils/cn';
+import { UserMenu } from './UserMenu';
+import { useAuth } from '@/lib/contexts/auth-context';
 
 /**
  * 导航项配置
@@ -33,6 +35,11 @@ const navItems: NavItem[] = [
     href: '/config',
     description: '系统配置',
   },
+  {
+    name: '监控',
+    href: '/monitoring',
+    description: '系统监控',
+  },
 ];
 
 /**
@@ -41,12 +48,14 @@ const navItems: NavItem[] = [
  * 提供应用的主导航功能，包括：
  * - 品牌标识
  * - 主要页面导航
+ * - 用户菜单
  * - 响应式设计
  * - 当前页面高亮
  */
 export const Navigation: React.FC = () => {
   const pathname = usePathname();
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
+  const { isAuthenticated, isLoading } = useAuth();
 
   const isActive = (href: string) => {
     if (href === '/') {
@@ -54,6 +63,11 @@ export const Navigation: React.FC = () => {
     }
     return pathname.startsWith(href);
   };
+
+  // 如果在登录页面，不显示导航栏
+  if (pathname === '/login') {
+    return null;
+  }
 
   return (
     <nav className="bg-white shadow-sm border-b border-gray-200 sticky top-0 z-50">
@@ -83,8 +97,9 @@ export const Navigation: React.FC = () => {
             </Link>
           </div>
 
+          {/* 桌面端导航 */}
           <div className="hidden md:flex items-center space-x-8">
-            {navItems.map((item) => (
+            {isAuthenticated && navItems.map((item) => (
               <Link
                 key={item.href}
                 href={item.href}
@@ -101,52 +116,67 @@ export const Navigation: React.FC = () => {
             ))}
             
             {/* 健康检查链接 */}
-            <a
-              href="/api/health"
-              target="_blank"
-              rel="noopener noreferrer"
-              className="text-gray-600 hover:text-gray-900 px-3 py-2 rounded-md text-sm font-medium transition-colors"
-              title="查看系统健康状态"
-            >
-              健康检查
-            </a>
+            {isAuthenticated && (
+              <a
+                href="/api/health"
+                target="_blank"
+                rel="noopener noreferrer"
+                className="text-gray-600 hover:text-gray-900 px-3 py-2 rounded-md text-sm font-medium transition-colors"
+                title="查看系统健康状态"
+              >
+                健康检查
+              </a>
+            )}
           </div>
 
-          <div className="md:hidden flex items-center">
-            <button
-              type="button"
-              className="text-gray-600 hover:text-gray-900 focus:outline-none focus:ring-2 focus:ring-gray-900 p-2 rounded"
-              onClick={() => setMobileMenuOpen(!mobileMenuOpen)}
-              aria-expanded={mobileMenuOpen}
-              aria-label="切换导航菜单"
-            >
-              <svg
-                className="w-6 h-6"
-                fill="none"
-                stroke="currentColor"
-                viewBox="0 0 24 24"
-              >
-                {mobileMenuOpen ? (
-                  <path
-                    strokeLinecap="round"
-                    strokeLinejoin="round"
-                    strokeWidth={2}
-                    d="M6 18L18 6M6 6l12 12"
-                  />
-                ) : (
-                  <path
-                    strokeLinecap="round"
-                    strokeLinejoin="round"
-                    strokeWidth={2}
-                    d="M4 6h16M4 12h16M4 18h16"
-                  />
-                )}
-              </svg>
-            </button>
+          {/* 右侧用户菜单或加载状态 */}
+          <div className="flex items-center">
+            {isLoading ? (
+              <div className="w-8 h-8 bg-gray-200 rounded-full animate-pulse"></div>
+            ) : isAuthenticated ? (
+              <UserMenu />
+            ) : null}
+
+            {/* 移动端菜单按钮 */}
+            {isAuthenticated && (
+              <div className="md:hidden ml-4">
+                <button
+                  type="button"
+                  className="text-gray-600 hover:text-gray-900 focus:outline-none focus:ring-2 focus:ring-gray-900 p-2 rounded"
+                  onClick={() => setMobileMenuOpen(!mobileMenuOpen)}
+                  aria-expanded={mobileMenuOpen}
+                  aria-label="切换导航菜单"
+                >
+                  <svg
+                    className="w-6 h-6"
+                    fill="none"
+                    stroke="currentColor"
+                    viewBox="0 0 24 24"
+                  >
+                    {mobileMenuOpen ? (
+                      <path
+                        strokeLinecap="round"
+                        strokeLinejoin="round"
+                        strokeWidth={2}
+                        d="M6 18L18 6M6 6l12 12"
+                      />
+                    ) : (
+                      <path
+                        strokeLinecap="round"
+                        strokeLinejoin="round"
+                        strokeWidth={2}
+                        d="M4 6h16M4 12h16M4 18h16"
+                      />
+                    )}
+                  </svg>
+                </button>
+              </div>
+            )}
           </div>
         </div>
 
-        {mobileMenuOpen && (
+        {/* 移动端菜单 */}
+        {mobileMenuOpen && isAuthenticated && (
           <div className="md:hidden border-t border-gray-200 py-2">
             <div className="space-y-1">
               {navItems.map((item) => (

@@ -1,20 +1,30 @@
+'use client';
+
 import { MonitoringDashboard } from '@/components/monitoring/MonitoringDashboard';
+import { useAuth } from '@/lib/contexts/auth-context';
+import { LoadingSpinner } from '@/components/ui/LoadingSpinner';
 
 /**
  * 监控页面
  */
 export default function MonitoringPage() {
+  const { isAuthenticated, isLoading } = useAuth();
+
+  if (isLoading) {
+    return (
+      <div className="min-h-screen flex items-center justify-center">
+        <LoadingSpinner size="lg" text="加载中..." />
+      </div>
+    );
+  }
+
+  if (!isAuthenticated) {
+    return null;
+  }
+
   return (
     <div className="container mx-auto px-4 py-8">
       <MonitoringDashboard />
     </div>
   );
 }
-
-/**
- * 页面元数据
- */
-export const metadata = {
-  title: '监控面板',
-  description: '实时监控系统性能与告警状态',
-};

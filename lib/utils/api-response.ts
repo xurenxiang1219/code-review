@@ -1,6 +1,6 @@
 import { NextResponse } from 'next/server';
 import { v4 as uuidv4 } from 'uuid';
-import { ApiCode, ApiMessage, ApiCodeType, getApiMessage } from '@/lib/constants/api-codes';
+import { ApiCode, ApiCodeType, getApiMessage } from '@/lib/constants/api-codes';
 import { logger } from '@/lib/utils/logger';
 
 /**
@@ -109,14 +109,16 @@ function mapCodeToHttpStatus(code: ApiCodeType): number {
  * @param data - 响应数据
  * @param message - 自定义消息
  * @param statusCode - HTTP 状态码
+ * @param existingRequestId - 已存在的请求ID（可选）
  * @returns NextResponse 对象
  */
 export function successResponse<T>(
   data: T,
   message?: string,
-  statusCode = 200
+  statusCode = 200,
+  existingRequestId?: string
 ): NextResponse<ApiResponse<T>> {
-  const requestId = uuidv4();
+  const requestId = existingRequestId ?? uuidv4();
   const response: ApiResponse<T> = {
     code: ApiCode.SUCCESS,
     msg: message || getApiMessage(ApiCode.SUCCESS),
@@ -179,15 +181,17 @@ export function paginatedResponse<T>(
  * @param message - 自定义错误消息
  * @param statusCode - HTTP 状态码
  * @param details - 错误详情
+ * @param existingRequestId - 已存在的请求ID（可选）
  * @returns NextResponse 对象
  */
 export function errorResponse(
   code: ApiCodeType,
   message?: string,
   statusCode?: number,
-  details?: ErrorDetail[]
+  details?: ErrorDetail[],
+  existingRequestId?: string
 ): NextResponse<ApiResponse<{ errors: ErrorDetail[] } | null>> {
-  const requestId = uuidv4();
+  const requestId = existingRequestId ?? uuidv4();
   const httpStatus = statusCode || mapCodeToHttpStatus(code);
   const errorMessage = message || getApiMessage(code);
   
@@ -277,16 +281,20 @@ export function notFoundResponse(
  * 创建服务器错误响应
  * @param message - 自定义消息
  * @param code - 业务状态码
+ * @param existingRequestId - 已存在的请求ID（可选）
  * @returns NextResponse 对象
  */
 export function internalErrorResponse(
   message?: string,
-  code: ApiCodeType = ApiCode.INTERNAL_ERROR
+  code: ApiCodeType = ApiCode.INTERNAL_ERROR,
+  existingRequestId?: string
 ): NextResponse<ApiResponse<{ errors: ErrorDetail[] } | null>> {
   return errorResponse(
     code,
     message || getApiMessage(code),
-    500
+    500,
+    undefined,
+    existingRequestId
   );
 }
 
@@ -311,28 +319,26 @@ export function businessErrorResponse(
  * 统一处理异常和响应格式
  * @param handler - 请求处理函数
  * @param errorMessage - 默认错误消息
+ * @param existingRequestId - 已存在的请求ID（可选）
  * @returns NextResponse 对象
  */
 export async function handleApiRequest<T>(
   handler: () => Promise<T>,
-  errorMessage?: string
+  errorMessage?: string,
+  existingRequestId?: string
 ): Promise<NextResponse<ApiResponse<T | { errors: ErrorDetail[] } | null>>> {
-  const requestId = uuidv4();
+  const requestId = existingRequestId ?? uuidv4();
   const startTime = Date.now();
+  let success = false;
   
   logger.setContext({ requestId });
   logger.debug('API Request Start', { requestId });
   
   try {
     const result = await handler();
-    const duration = Date.now() - startTime;
-    
-    logger.performance('API Request', duration, { requestId, success: true });
-    return successResponse(result);
+    success = true;
+    return successResponse(result, undefined, 200, requestId);
   } catch (error) {
-    const duration = Date.now() - startTime;
-    logger.performance('API Request', duration, { requestId, success: false });
-    
     if (error instanceof ApiError) {
       logger.warn('API Business Error', {
         requestId,
@@ -341,7 +347,7 @@ export async function handleApiRequest<T>(
         statusCode: error.statusCode,
       });
       
-      return errorResponse(error.code, error.message, error.statusCode, error.details);
+      return errorResponse(error.code, error.message, error.statusCode, error.details, requestId);
     }
     
     const errorMsg = error instanceof Error ? error.message : String(error);
@@ -351,8 +357,11 @@ export async function handleApiRequest<T>(
       stack: error instanceof Error ? error.stack : undefined,
     });
     
-    return internalErrorResponse(errorMessage || errorMsg || '服务器内部错误');
+    const finalErrorMessage = errorMessage ?? errorMsg ?? '服务器内部错误';
+    return internalErrorResponse(finalErrorMessage, ApiCode.INTERNAL_ERROR, requestId);
   } finally {
+    const duration = Date.now() - startTime;
+    logger.performance('API Request', duration, { requestId, success });
     logger.clearContext();
   }
 }

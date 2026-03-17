@@ -370,11 +370,17 @@ export class DataEncryption {
     const encrypted = { ...obj };
 
     for (const field of sensitiveFields) {
-      if (field in encrypted && encrypted[field] != null) {
-        const value = String(encrypted[field]);
-        if (value && !this.isEncrypted(value)) {
-          encrypted[field] = SENSITIVE_FIELD_PREFIX + this.encrypt(value, password);
-        }
+      if (!(field in encrypted) || encrypted[field] == null) {
+        continue;
+      }
+
+      // 对象类型序列化为JSON字符串，其他类型转为字符串
+      const value = typeof encrypted[field] === 'object' 
+        ? JSON.stringify(encrypted[field])
+        : String(encrypted[field]);
+      
+      if (value && !this.isEncrypted(value)) {
+        encrypted[field] = SENSITIVE_FIELD_PREFIX + this.encrypt(value, password);
       }
     }
 
@@ -396,20 +402,31 @@ export class DataEncryption {
     const decrypted = { ...obj };
 
     for (const field of sensitiveFields) {
-      if (field in decrypted && decrypted[field] != null) {
-        const value = String(decrypted[field]);
-        if (this.isEncrypted(value)) {
-          try {
-            const encryptedData = value.substring(SENSITIVE_FIELD_PREFIX.length);
-            decrypted[field] = this.decrypt(encryptedData, password);
-          } catch (error) {
-            logger.error(`Failed to decrypt field: ${field}`, {
-              error: error instanceof Error ? error.message : String(error),
-            });
-            // 保持原值，避免系统崩溃
-            decrypted[field] = value;
-          }
+      if (!(field in decrypted) || decrypted[field] == null) {
+        continue;
+      }
+
+      const value = String(decrypted[field]);
+      if (!this.isEncrypted(value)) {
+        continue;
+      }
+
+      try {
+        const encryptedData = value.substring(SENSITIVE_FIELD_PREFIX.length);
+        const decryptedValue = this.decrypt(encryptedData, password);
+        
+        // 尝试解析为JSON对象，失败则保持字符串
+        try {
+          decrypted[field] = JSON.parse(decryptedValue);
+        } catch {
+          decrypted[field] = decryptedValue;
         }
+      } catch (error) {
+        logger.error(`解密字段失败: ${field}`, {
+          error: error instanceof Error ? error.message : String(error),
+        });
+        // 保持原值，避免系统崩溃
+        decrypted[field] = value;
       }
     }
 

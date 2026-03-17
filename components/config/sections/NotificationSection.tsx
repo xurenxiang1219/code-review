@@ -36,23 +36,47 @@ export function NotificationSection({ value, onChange }: NotificationSectionProp
   const [newRecipient, setNewRecipient] = useState('');
   const [newChannel, setNewChannel] = useState('');
 
+  // 确保配置对象完整性，避免空值错误
+  const safeValue = value ?? {
+    email: { enabled: false, recipients: [], criticalOnly: true },
+    im: { enabled: false, channels: [], webhook: '' },
+    gitComment: { enabled: true, summaryOnly: false }
+  };
+
+  /**
+   * 更新配置字段
+   * @param section - 配置区块
+   * @param field - 字段名
+   * @param fieldValue - 字段值
+   */
   const updateConfig = <K extends keyof NotificationConfig>(
     section: K,
     field: keyof NotificationConfig[K],
     fieldValue: any
   ) => {
+    const updatedSection = { ...safeValue[section], [field]: fieldValue };
+    
+    // 禁用通知时清空相关字段，避免验证错误
+    if (section === 'email' && field === 'enabled' && !fieldValue) {
+      updatedSection.recipients = [];
+    }
+    if (section === 'im' && field === 'enabled' && !fieldValue) {
+      updatedSection.webhook = '';
+      updatedSection.channels = [];
+    }
+    
     onChange({
-      ...value,
-      [section]: { ...value[section], [field]: fieldValue }
+      ...safeValue,
+      [section]: updatedSection
     });
   };
 
-  const renderItemList = (
-    items: string[],
-    onRemove: (item: string) => void
-  ) => (
+  /**
+   * 渲染项目列表（收件人/频道）
+   */
+  const renderItemList = (items: string[], onRemove: (item: string) => void) => (
     <div className="mt-2 flex flex-wrap gap-2">
-      {items.map((item) => (
+      {(items || []).map((item) => (
         <span
           key={item}
           className="inline-flex items-center px-2.5 py-0.5 rounded text-xs font-medium bg-gray-100 text-gray-800 border border-gray-200"
@@ -70,26 +94,54 @@ export function NotificationSection({ value, onChange }: NotificationSectionProp
     </div>
   );
 
+  /**
+   * 添加收件人
+   */
   const addRecipient = () => {
     const trimmed = newRecipient.trim();
-    if (!trimmed || value.email.recipients.includes(trimmed)) return;
-    updateConfig('email', 'recipients', [...value.email.recipients, trimmed]);
+    const currentRecipients = safeValue.email.recipients || [];
+    if (!trimmed || currentRecipients.includes(trimmed)) return;
+    
+    updateConfig('email', 'recipients', [...currentRecipients, trimmed]);
     setNewRecipient('');
   };
 
+  /**
+   * 移除收件人
+   */
   const removeRecipient = (email: string) => {
-    updateConfig('email', 'recipients', value.email.recipients.filter(r => r !== email));
+    const currentRecipients = safeValue.email.recipients || [];
+    updateConfig('email', 'recipients', currentRecipients.filter((r: string) => r !== email));
   };
 
+  /**
+   * 添加频道
+   */
   const addChannel = () => {
     const trimmed = newChannel.trim();
-    if (!trimmed || value.im.channels.includes(trimmed)) return;
-    updateConfig('im', 'channels', [...value.im.channels, trimmed]);
+    const currentChannels = safeValue.im.channels || [];
+    if (!trimmed || currentChannels.includes(trimmed)) return;
+    
+    updateConfig('im', 'channels', [...currentChannels, trimmed]);
     setNewChannel('');
   };
 
+  /**
+   * 移除频道
+   */
   const removeChannel = (channel: string) => {
-    updateConfig('im', 'channels', value.im.channels.filter(c => c !== channel));
+    const currentChannels = safeValue.im.channels || [];
+    updateConfig('im', 'channels', currentChannels.filter((c: string) => c !== channel));
+  };
+
+  /**
+   * 处理输入框回车事件
+   */
+  const handleKeyDown = (e: React.KeyboardEvent, action: () => void) => {
+    if (e.key === 'Enter') {
+      e.preventDefault();
+      action();
+    }
   };
 
   return (
@@ -98,16 +150,17 @@ export function NotificationSection({ value, onChange }: NotificationSectionProp
       <p className="text-sm text-gray-500">配置审查完成后的通知方式</p>
       
       <div className="mt-6 space-y-8">
+        {/* 邮件通知配置 */}
         <div className="border border-gray-200 rounded-lg p-4">
           <div className="flex items-center justify-between mb-4">
             <h3 className="text-sm font-medium text-gray-900">邮件通知</h3>
             <ToggleSwitch
-              checked={value.email.enabled}
+              checked={safeValue.email.enabled}
               onChange={(checked) => updateConfig('email', 'enabled', checked)}
             />
           </div>
 
-          {value.email.enabled && (
+          {safeValue.email.enabled && (
             <div className="space-y-4">
               <div>
                 <label className="block text-sm font-medium text-gray-700">收件人</label>
@@ -116,7 +169,7 @@ export function NotificationSection({ value, onChange }: NotificationSectionProp
                     type="email"
                     value={newRecipient}
                     onChange={(e) => setNewRecipient(e.target.value)}
-                    onKeyDown={(e) => e.key === 'Enter' && (e.preventDefault(), addRecipient())}
+                    onKeyDown={(e) => handleKeyDown(e, addRecipient)}
                     placeholder="请输入邮箱地址"
                     className="flex-1 rounded-md border-gray-300 shadow-sm focus:border-gray-900 focus:ring-gray-900 sm:text-sm"
                   />
@@ -128,14 +181,14 @@ export function NotificationSection({ value, onChange }: NotificationSectionProp
                     添加
                   </button>
                 </div>
-                {renderItemList(value.email.recipients, removeRecipient)}
+                {renderItemList(safeValue.email.recipients || [], removeRecipient)}
               </div>
 
               <div className="flex items-center">
                 <input
                   id="email-critical-only"
                   type="checkbox"
-                  checked={value.email.criticalOnly}
+                  checked={safeValue.email.criticalOnly}
                   onChange={(e) => updateConfig('email', 'criticalOnly', e.target.checked)}
                   className="h-4 w-4 text-gray-900 focus:ring-gray-900 border-gray-300 rounded"
                 />
@@ -147,16 +200,17 @@ export function NotificationSection({ value, onChange }: NotificationSectionProp
           )}
         </div>
 
+        {/* 即时消息通知配置 */}
         <div className="border border-gray-200 rounded-lg p-4">
           <div className="flex items-center justify-between mb-4">
             <h3 className="text-sm font-medium text-gray-900">即时消息通知</h3>
             <ToggleSwitch
-              checked={value.im.enabled}
+              checked={safeValue.im.enabled}
               onChange={(checked) => updateConfig('im', 'enabled', checked)}
             />
           </div>
 
-          {value.im.enabled && (
+          {safeValue.im.enabled && (
             <div className="space-y-4">
               <div>
                 <label htmlFor="webhook-url" className="block text-sm font-medium text-gray-700">
@@ -165,7 +219,7 @@ export function NotificationSection({ value, onChange }: NotificationSectionProp
                 <input
                   type="url"
                   id="webhook-url"
-                  value={value.im.webhook || ''}
+                  value={safeValue.im.webhook || ''}
                   onChange={(e) => updateConfig('im', 'webhook', e.target.value)}
                   placeholder="https://hooks.slack.com/services/..."
                   className="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-gray-900 focus:ring-gray-900 sm:text-sm"
@@ -179,7 +233,7 @@ export function NotificationSection({ value, onChange }: NotificationSectionProp
                     type="text"
                     value={newChannel}
                     onChange={(e) => setNewChannel(e.target.value)}
-                    onKeyDown={(e) => e.key === 'Enter' && (e.preventDefault(), addChannel())}
+                    onKeyDown={(e) => handleKeyDown(e, addChannel)}
                     placeholder="例如：#code-review, @username"
                     className="flex-1 rounded-md border-gray-300 shadow-sm focus:border-gray-900 focus:ring-gray-900 sm:text-sm"
                   />
@@ -191,27 +245,28 @@ export function NotificationSection({ value, onChange }: NotificationSectionProp
                     添加
                   </button>
                 </div>
-                {renderItemList(value.im.channels, removeChannel)}
+                {renderItemList(safeValue.im.channels || [], removeChannel)}
               </div>
             </div>
           )}
         </div>
 
+        {/* Git 评论通知配置 */}
         <div className="border border-gray-200 rounded-lg p-4">
           <div className="flex items-center justify-between mb-4">
             <h3 className="text-sm font-medium text-gray-900">Git 评论通知</h3>
             <ToggleSwitch
-              checked={value.gitComment.enabled}
+              checked={safeValue.gitComment.enabled}
               onChange={(checked) => updateConfig('gitComment', 'enabled', checked)}
             />
           </div>
 
-          {value.gitComment.enabled && (
+          {safeValue.gitComment.enabled && (
             <div className="flex items-center">
               <input
                 id="git-summary-only"
                 type="checkbox"
-                checked={value.gitComment.summaryOnly}
+                checked={safeValue.gitComment.summaryOnly}
                 onChange={(e) => updateConfig('gitComment', 'summaryOnly', e.target.checked)}
                 className="h-4 w-4 text-gray-900 focus:ring-gray-900 border-gray-300 rounded"
               />

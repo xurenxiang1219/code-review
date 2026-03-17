@@ -9,8 +9,9 @@ import {
 import { ApiCode } from '@/lib/constants/api-codes';
 import { configRepository, UpdateConfigParams } from '@/lib/db/repositories/config';
 import { logger } from '@/lib/utils/logger';
-import { authenticateApiRoute } from '@/lib/middleware/api-auth';
+import { authenticateApiRouteSimple } from '@/lib/middleware/api-auth-simple';
 import { Permission } from '@/types/auth';
+import '@/lib/init/auth';
 
 /**
  * AI 模型配置验证 Schema
@@ -27,21 +28,61 @@ const AIModelConfigSchema = z.object({
 /**
  * 通知配置验证 Schema
  */
+/**
+ * 通知配置验证 Schema
+ */
+/**
+ * 通知配置验证 Schema
+ */
 const NotificationConfigSchema = z.object({
   email: z.object({
     enabled: z.boolean(),
-    recipients: z.array(z.string().email('邮箱格式错误')),
+    recipients: z.array(z.string().email('邮箱格式错误')).default([]),
     criticalOnly: z.boolean(),
+  }).refine((data) => {
+    // 启用邮件通知时必须有收件人
+    return !data.enabled || (data.recipients?.length > 0);
+  }, {
+    message: '启用邮件通知时必须设置收件人',
+    path: ['recipients'],
   }),
   im: z.object({
     enabled: z.boolean(),
-    webhook: z.string().url('Webhook 地址格式错误').optional(),
-    channels: z.array(z.string()),
+    webhook: z.string().default(''),
+    channels: z.array(z.string()).default([]),
+  }).refine((data) => {
+    if (!data.enabled) return true;
+
+    // 验证 webhook 地址
+    if (!data.webhook?.trim()) return false;
+    try {
+      new URL(data.webhook);
+    } catch {
+      return false;
+    }
+
+    // 验证频道列表
+    return data.channels?.length > 0;
+  }, {
+    message: '启用即时消息通知时必须设置有效的 Webhook 地址和频道',
+    path: ['webhook'],
   }),
   gitComment: z.object({
     enabled: z.boolean(),
     summaryOnly: z.boolean(),
   }),
+});
+
+/**
+ * Git 配置验证 Schema
+ */
+const GitConfigSchema = z.object({
+  baseUrl: z.string().url('Git API 地址格式错误').optional(),
+  accessToken: z.string().optional(),
+  defaultBranch: z.string().min(1, '默认分支不能为空'),
+  watchedBranches: z.array(z.string().min(1, '分支名不能为空')),
+  webhookSecret: z.string().optional(),
+  timeout: z.number().min(5000).max(120000, '超时时间必须在 5000-120000 毫秒之间').optional(),
 });
 
 /**
@@ -53,7 +94,8 @@ const UpdateConfigSchema = z.object({
   ignorePatterns: z.array(z.string()).optional(),
   aiModel: AIModelConfigSchema.optional(),
   promptTemplate: z.string().optional(),
-  pollingEnabled: z.boolean().optional(),
+  git: GitConfigSchema.optional(),
+  pollingEnabled: z.union([z.boolean(), z.number()]).transform(val => Boolean(val)).optional(),
   pollingInterval: z.number().min(30).max(3600, '轮询间隔必须在 30-3600 秒之间').optional(),
   notificationConfig: NotificationConfigSchema.optional(),
 });
@@ -72,21 +114,46 @@ function sanitizeConfig(config: any) {
 }
 
 /**
- * GET /api/config - 查询配置
- * 
- * 查询参数:
- * - repository: 仓库名称 (必填)
+ * GET /api/config/all - 获取所有配置
  * 
  * 响应:
- * - 200: 返回配置信息
- * - 404: 配置不存在
- * - 400: 参数错误
+ * - 200: 返回所有配置列表
  * - 500: 服务器错误
  */
 export async function GET(request: NextRequest) {
-  const auth = await authenticateApiRoute(request, {
+  // 检查路径是否为 /api/config/all
+  if (request.nextUrl.pathname === '/api/config/all') {
+    const auth = await authenticateApiRouteSimple(request, {
+      requiredPermissions: [Permission.CONFIG_READ],
+    });
+    
+    if (auth instanceof NextResponse) {
+      return auth;
+    }
+
+    return handleApiRequest(async () => {
+      const reqLogger = logger.child({ 
+        operation: 'getAllConfigs',
+        requestId: auth.requestId,
+        userId: auth.user.id,
+      });
+
+      reqLogger.info('开始获取所有配置');
+
+      const configs = await configRepository.getAllConfigs();
+
+      reqLogger.info('所有配置获取成功', { count: configs.length });
+
+      // 脱敏处理
+      const sanitizedConfigs = configs.map(config => sanitizeConfig(config));
+
+      return successResponse(sanitizedConfigs, '配置列表获取成功');
+    });
+  }
+
+  // 原有的单个配置查询逻辑
+  const auth = await authenticateApiRouteSimple(request, {
     requiredPermissions: [Permission.CONFIG_READ],
-    enableRateLimit: true,
   });
   
   if (auth instanceof NextResponse) {
@@ -150,9 +217,8 @@ export async function GET(request: NextRequest) {
  * - 500: 服务器错误
  */
 export async function PUT(request: NextRequest) {
-  const auth = await authenticateApiRoute(request, {
+  const auth = await authenticateApiRouteSimple(request, {
     requiredPermissions: [Permission.CONFIG_WRITE],
-    enableRateLimit: true,
   });
   
   if (auth instanceof NextResponse) {
@@ -240,9 +306,8 @@ export async function PUT(request: NextRequest) {
  * - 500: 服务器错误
  */
 export async function POST(request: NextRequest) {
-  const auth = await authenticateApiRoute(request, {
+  const auth = await authenticateApiRouteSimple(request, {
     requiredPermissions: [Permission.CONFIG_WRITE],
-    enableRateLimit: true,
   });
   
   if (auth instanceof NextResponse) {
@@ -274,7 +339,7 @@ export async function POST(request: NextRequest) {
     }
 
     // 创建默认配置
-    const defaultConfig = await configRepository.createDefaultConfig(repository);
+    const defaultConfig = await configRepository.createDefaultConfigWithoutEncryption(repository);
 
     reqLogger.info('默认配置创建成功', { 
       configId: defaultConfig.id 
@@ -297,9 +362,8 @@ export async function POST(request: NextRequest) {
  * - 500: 服务器错误
  */
 export async function DELETE(request: NextRequest) {
-  const auth = await authenticateApiRoute(request, {
+  const auth = await authenticateApiRouteSimple(request, {
     requiredPermissions: [Permission.CONFIG_WRITE],
-    enableRateLimit: true,
   });
   
   if (auth instanceof NextResponse) {

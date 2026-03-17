@@ -3,7 +3,7 @@ import { reviewRepository } from '@/lib/db/repositories/review';
 import { paginatedResponse, errorResponse } from '@/lib/utils/api-response';
 import { ApiCode } from '@/lib/constants/api-codes';
 import { logger } from '@/lib/utils/logger';
-import { authenticateApiRoute } from '@/lib/middleware/api-auth';
+import { authenticateApiRouteSimple } from '@/lib/middleware/api-auth-simple';
 import { Permission } from '@/types/auth';
 import type { ReviewQueryParams } from '@/lib/db/repositories/review';
 
@@ -75,9 +75,8 @@ import type { ReviewQueryParams } from '@/lib/db/repositories/review';
  * }
  */
 export async function GET(request: NextRequest) {
-  const auth = await authenticateApiRoute(request, {
+  const auth = await authenticateApiRouteSimple(request, {
     requiredPermissions: [Permission.REVIEW_READ],
-    enableRateLimit: true,
   });
   
   if (auth instanceof NextResponse) {

@@ -4,6 +4,7 @@ import { useState, useEffect } from 'react';
 import { Card } from '@/components/ui/Card';
 import { Alert } from '@/components/ui/Alert';
 import { LoadingSpinner } from '@/components/ui/LoadingSpinner';
+import { authApiClient } from '@/lib/utils/auth-api-client';
 
 /**
  * 告警事件接口
@@ -60,25 +61,15 @@ export function AlertManager() {
    */
   const fetchAlertData = async () => {
     try {
-      const [activeResponse, historyResponse, statsResponse] = await Promise.all([
-        fetch('/api/monitoring/alerts?type=active'),
-        fetch('/api/monitoring/alerts?type=history&limit=50'),
-        fetch('/api/monitoring/alerts?type=stats'),
-      ]);
-
-      if (!activeResponse.ok || !historyResponse.ok || !statsResponse.ok) {
-        throw new Error('获取告警数据失败');
-      }
-
       const [activeResult, historyResult, statsResult] = await Promise.all([
-        activeResponse.json(),
-        historyResponse.json(),
-        statsResponse.json(),
+        authApiClient.get('/api/monitoring/alerts', { type: 'active' }),
+        authApiClient.get('/api/monitoring/alerts', { type: 'history', limit: '50' }),
+        authApiClient.get('/api/monitoring/alerts', { type: 'stats' }),
       ]);
 
-      setActiveAlerts(activeResult.data);
-      setAlertHistory(historyResult.data);
-      setAlertStats(statsResult.data);
+      setActiveAlerts(activeResult);
+      setAlertHistory(historyResult);
+      setAlertStats(statsResult);
       setError(null);
     } catch (err) {
       setError(err instanceof Error ? err.message : '未知错误');
@@ -88,77 +79,53 @@ export function AlertManager() {
   };
 
   /**
-   * 静默告警
+   * 执行告警操作的通用方法
    */
-  const silenceAlert = async (alertId: string, duration = 300000) => {
+  const performAlertAction = async (action: 'silence' | 'unsilence', alertId: string, duration?: number) => {
     try {
-      const response = await fetch('/api/monitoring/alerts', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          action: 'silence',
-          alertId,
-          duration,
-        }),
-      });
+      const body: any = { action, alertId };
+      if (duration) body.duration = duration;
 
-      if (!response.ok) {
-        throw new Error('静默告警失败');
-      }
-
-      await fetchAlertData(); // 刷新数据
+      await authApiClient.post('/api/monitoring/alerts', body);
+      await fetchAlertData();
     } catch (err) {
-      setError(err instanceof Error ? err.message : '静默告警失败');
+      setError(err instanceof Error ? err.message : `${action === 'silence' ? '静默' : '解除静默'}告警失败`);
     }
   };
+
+  /**
+   * 静默告警
+   */
+  const silenceAlert = (alertId: string, duration = 300000) => 
+    performAlertAction('silence', alertId, duration);
 
   /**
    * 解除静默
    */
-  const unsilenceAlert = async (alertId: string) => {
-    try {
-      const response = await fetch('/api/monitoring/alerts', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          action: 'unsilence',
-          alertId,
-        }),
-      });
-
-      if (!response.ok) {
-        throw new Error('解除静默失败');
-      }
-
-      await fetchAlertData(); // 刷新数据
-    } catch (err) {
-      setError(err instanceof Error ? err.message : '解除静默失败');
-    }
-  };
+  const unsilenceAlert = (alertId: string) => 
+    performAlertAction('unsilence', alertId);
 
   /**
-   * 获取严重程度颜色
+   * 获取样式类名的通用方法
    */
-  const getSeverityColor = (severity: string): string => {
-    switch (severity) {
-      case 'info': return 'text-blue-700 bg-blue-50 border-blue-200';
-      case 'warning': return 'text-amber-700 bg-amber-50 border-amber-200';
-      case 'error': return 'text-orange-700 bg-orange-50 border-orange-200';
-      case 'critical': return 'text-red-700 bg-red-50 border-red-200';
-      default: return 'text-gray-700 bg-gray-50 border-gray-200';
-    }
-  };
-
-  /**
-   * 获取状态颜色
-   */
-  const getStatusColor = (status: string): string => {
-    switch (status) {
-      case 'sent': return 'text-emerald-600 bg-emerald-50';
-      case 'pending': return 'text-amber-600 bg-amber-50';
-      case 'failed': return 'text-red-600 bg-red-50';
-      case 'silenced': return 'text-gray-600 bg-gray-50';
-      default: return 'text-gray-600 bg-gray-50';
+  const getStyleClasses = {
+    severity: (severity: string): string => {
+      const severityMap: Record<string, string> = {
+        info: 'text-blue-700 bg-blue-50 border-blue-200',
+        warning: 'text-amber-700 bg-amber-50 border-amber-200',
+        error: 'text-orange-700 bg-orange-50 border-orange-200',
+        critical: 'text-red-700 bg-red-50 border-red-200',
+      };
+      return severityMap[severity] || 'text-gray-700 bg-gray-50 border-gray-200';
+    },
+    status: (status: string): string => {
+      const statusMap: Record<string, string> = {
+        sent: 'text-emerald-600 bg-emerald-50',
+        pending: 'text-amber-600 bg-amber-50',
+        failed: 'text-red-600 bg-red-50',
+        silenced: 'text-gray-600 bg-gray-50',
+      };
+      return statusMap[status] || 'text-gray-600 bg-gray-50';
     }
   };
 
@@ -252,7 +219,7 @@ export function AlertManager() {
                 <div className="flex items-start justify-between">
                   <div className="flex-1">
                     <div className="flex items-center space-x-2 mb-2">
-                      <span className={`px-2 py-1 rounded text-xs font-medium border ${getSeverityColor(alert.severity)}`}>
+                      <span className={`px-2 py-1 rounded text-xs font-medium border ${getStyleClasses.severity(alert.severity)}`}>
                         {alert.severity.toUpperCase()}
                       </span>
                       <span className="font-semibold text-gray-900">{alert.ruleName}</span>
@@ -297,11 +264,11 @@ export function AlertManager() {
                 <div className="flex items-start justify-between">
                   <div className="flex-1">
                     <div className="flex items-center space-x-2 mb-2">
-                      <span className={`px-2 py-1 rounded text-xs font-medium border ${getSeverityColor(history.alert.severity)}`}>
+                      <span className={`px-2 py-1 rounded text-xs font-medium border ${getStyleClasses.severity(history.alert.severity)}`}>
                         {history.alert.severity.toUpperCase()}
                       </span>
                       <span className="font-semibold text-gray-900">{history.alert.ruleName}</span>
-                      <span className={`px-2 py-1 rounded text-xs border ${getStatusColor(history.status)}`}>
+                      <span className={`px-2 py-1 rounded text-xs border ${getStyleClasses.status(history.status)}`}>
                         {history.status === 'sent' ? '已发送' :
                          history.status === 'pending' ? '待发送' :
                          history.status === 'failed' ? '失败' : '已静默'}
@@ -335,7 +302,7 @@ export function AlertManager() {
           <div className="bg-white rounded-lg shadow-sm border p-6">
             <h3 className="text-base font-semibold text-gray-900 mb-4">按严重程度</h3>
             <div className="space-y-3 text-sm">
-              {Object.entries(alertStats.bySeverity).map(([severity, count]) => (
+              {Object.entries(alertStats.bySeverity || {}).map(([severity, count]) => (
                 <div key={severity} className="flex justify-between items-center">
                   <span className="capitalize text-gray-600">{severity}</span>
                   <span className="font-semibold text-gray-900">{count}</span>
@@ -352,7 +319,7 @@ export function AlertManager() {
           <div className="bg-white rounded-lg shadow-sm border p-6">
             <h3 className="text-base font-semibold text-gray-900 mb-4">按规则</h3>
             <div className="space-y-3 text-sm">
-              {Object.entries(alertStats.byRule).slice(0, 10).map(([rule, count]) => (
+              {Object.entries(alertStats.byRule || {}).slice(0, 10).map(([rule, count]) => (
                 <div key={rule} className="flex justify-between items-center">
                   <span className="truncate text-gray-600">{rule}</span>
                   <span className="font-semibold text-gray-900">{count}</span>

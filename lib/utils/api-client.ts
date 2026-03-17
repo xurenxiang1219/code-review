@@ -127,7 +127,7 @@ class ApiClient {
     const fullUrl = searchParams ? `${url}?${searchParams}` : url;
     
     const response = await this.request<T>(fullUrl, { method: 'GET' });
-    return response.data!;
+    return response.data ?? ({} as T);
   }
 
   /**
@@ -138,7 +138,7 @@ class ApiClient {
       method: 'POST',
       body: this.buildRequestBody(data),
     });
-    return response.data!;
+    return response.data ?? ({} as T);
   }
 
   /**
@@ -149,7 +149,7 @@ class ApiClient {
       method: 'PUT',
       body: this.buildRequestBody(data),
     });
-    return response.data!;
+    return response.data ?? ({} as T);
   }
 
   /**
@@ -157,7 +157,7 @@ class ApiClient {
    */
   async delete<T>(url: string): Promise<T> {
     const response = await this.request<T>(url, { method: 'DELETE' });
-    return response.data!;
+    return response.data ?? ({} as T);
   }
 
   /**

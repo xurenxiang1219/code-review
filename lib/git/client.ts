@@ -68,17 +68,19 @@ export class GitClient {
    * @returns 提交信息
    */
   async getCommit(commitHash: string, repository: string): Promise<CommitInfo> {
+    const normalizedRepo = this.normalizeRepository(repository);
+    
     return withRetry(
       async () => {
-        this.clientLogger.debug('Fetching commit', { commitHash, repository });
+        this.clientLogger.debug('Fetching commit', { commitHash, repository: normalizedRepo });
 
-        const url = `${this.config.baseUrl}/repos/${repository}/commits/${commitHash}`;
+        const url = `${this.config.baseUrl}/repos/${normalizedRepo}/commits/${commitHash}`;
         const response = await this.makeRequest<GitCommitResponse>(url);
 
         const commitInfo: CommitInfo = {
           hash: response.sha,
           branch: '', // 需要单独获取分支信息
-          repository,
+          repository: normalizedRepo,
           author: {
             name: response.commit.author.name,
             email: response.commit.author.email,
@@ -107,11 +109,13 @@ export class GitClient {
    * @returns 差异信息
    */
   async getDiff(commitHash: string, repository: string): Promise<DiffInfo> {
+    const normalizedRepo = this.normalizeRepository(repository);
+    
     return withRetry(
       async () => {
-        this.clientLogger.debug('Fetching diff', { commitHash, repository });
+        this.clientLogger.debug('Fetching diff', { commitHash, repository: normalizedRepo });
 
-        const url = `${this.config.baseUrl}/repos/${repository}/commits/${commitHash}`;
+        const url = `${this.config.baseUrl}/repos/${normalizedRepo}/commits/${commitHash}`;
         const response = await this.makeRequest<GitCommitResponse>(url);
 
         if (!response.files) {
@@ -165,15 +169,26 @@ export class GitClient {
    * @param limit - 限制数量
    * @returns 提交列表
    */
+  /**
+   * 规范化仓库名称，移除.git后缀
+   * @param repository 原始仓库名称
+   * @returns 规范化后的仓库名称
+   */
+  private normalizeRepository(repository: string): string {
+    return repository.replace(/\.git$/, '');
+  }
+
   async getCommits(
     repository: string, 
     branch: string, 
     since?: Date, 
     limit = 50
   ): Promise<CommitInfo[]> {
+    const normalizedRepo = this.normalizeRepository(repository);
+    
     return withRetry(
       async () => {
-        this.clientLogger.debug('Fetching commits', { repository, branch, since, limit });
+        this.clientLogger.debug('Fetching commits', { repository: normalizedRepo, branch, since, limit });
 
         const params = new URLSearchParams({
           sha: branch,
@@ -184,13 +199,13 @@ export class GitClient {
           params.append('since', since.toISOString());
         }
 
-        const url = `${this.config.baseUrl}/repos/${repository}/commits?${params}`;
+        const url = `${this.config.baseUrl}/repos/${normalizedRepo}/commits?${params}`;
         const response = await this.makeRequest<GitCommitResponse[]>(url);
 
         const commits: CommitInfo[] = response.map(commit => ({
           hash: commit.sha,
           branch,
-          repository,
+          repository: normalizedRepo,
           author: {
             name: commit.commit.author.name,
             email: commit.commit.author.email,
@@ -201,7 +216,7 @@ export class GitClient {
         }));
 
         this.clientLogger.debug('Commits fetched successfully', {
-          repository,
+          repository: normalizedRepo,
           branch,
           count: commits.length,
         });
@@ -209,7 +224,7 @@ export class GitClient {
         return commits;
       },
       GIT_RETRY_OPTIONS,
-      `getCommits(${repository}/${branch})`
+      `getCommits(${normalizedRepo}/${branch})`
     );
   }
 
@@ -225,16 +240,18 @@ export class GitClient {
     repository: string, 
     comment: ReviewComment
   ): Promise<CommentPublishResult> {
+    const normalizedRepo = this.normalizeRepository(repository);
+    
     return withRetry(
       async () => {
         this.clientLogger.debug('Publishing comment', { 
           commitHash, 
-          repository, 
+          repository: normalizedRepo, 
           file: comment.file, 
           line: comment.line 
         });
 
-        const url = `${this.config.baseUrl}/repos/${repository}/commits/${commitHash}/comments`;
+        const url = `${this.config.baseUrl}/repos/${normalizedRepo}/commits/${commitHash}/comments`;
         const body = {
           body: this.formatComment(comment),
           path: comment.file,
@@ -297,11 +314,13 @@ export class GitClient {
     repository: string, 
     summary: string
   ): Promise<CommentPublishResult> {
+    const normalizedRepo = this.normalizeRepository(repository);
+    
     return withRetry(
       async () => {
-        this.clientLogger.debug('Publishing summary comment', { commitHash, repository });
+        this.clientLogger.debug('Publishing summary comment', { commitHash, repository: normalizedRepo });
 
-        const url = `${this.config.baseUrl}/repos/${repository}/commits/${commitHash}/comments`;
+        const url = `${this.config.baseUrl}/repos/${normalizedRepo}/commits/${commitHash}/comments`;
         const body = {
           body: summary,
         };
@@ -334,11 +353,13 @@ export class GitClient {
    * @returns 分支信息
    */
   async getBranch(repository: string, branch: string): Promise<BranchInfo> {
+    const normalizedRepo = this.normalizeRepository(repository);
+    
     return withRetry(
       async () => {
-        this.clientLogger.debug('Fetching branch info', { repository, branch });
+        this.clientLogger.debug('Fetching branch info', { repository: normalizedRepo, branch });
 
-        const url = `${this.config.baseUrl}/repos/${repository}/branches/${branch}`;
+        const url = `${this.config.baseUrl}/repos/${normalizedRepo}/branches/${branch}`;
         const response = await this.makeRequest<GitBranchResponse>(url);
 
         const branchInfo: BranchInfo = {
@@ -351,7 +372,7 @@ export class GitClient {
         };
 
         this.clientLogger.debug('Branch info fetched successfully', { 
-          repository, 
+          repository: normalizedRepo, 
           branch, 
           commitSha: branchInfo.commit.sha 
         });
@@ -359,7 +380,7 @@ export class GitClient {
         return branchInfo;
       },
       GIT_RETRY_OPTIONS,
-      `getBranch(${repository}/${branch})`
+      `getBranch(${normalizedRepo}/${branch})`
     );
   }
 
@@ -375,15 +396,17 @@ export class GitClient {
     repository: string, 
     status: CommitStatus
   ): Promise<boolean> {
+    const normalizedRepo = this.normalizeRepository(repository);
+    
     return withRetry(
       async () => {
         this.clientLogger.debug('Updating commit status', { 
           commitHash, 
-          repository, 
+          repository: normalizedRepo, 
           state: status.state 
         });
 
-        const url = `${this.config.baseUrl}/repos/${repository}/statuses/${commitHash}`;
+        const url = `${this.config.baseUrl}/repos/${normalizedRepo}/statuses/${commitHash}`;
         const body = {
           state: status.state,
           target_url: status.targetUrl,
@@ -565,7 +588,39 @@ export function createGitClient(config: GitClientConfig): GitClient {
 }
 
 /**
- * 从环境变量创建 Git 客户端配置
+ * 从数据库配置创建 Git 客户端配置
+ * @param gitConfig - 数据库中的 Git 配置
+ * @returns Git 客户端配置
+ */
+export /**
+ * 从数据库配置创建Git客户端配置
+ * @param gitConfig 数据库中的Git配置对象
+ * @returns Git客户端配置
+ * @throws 当访问令牌缺失时抛出错误
+ */
+function createGitClientConfigFromDb(gitConfig: {
+  baseUrl?: string;
+  accessToken?: string;
+  timeout?: number;
+}): GitClientConfig {
+  const baseUrl = gitConfig?.baseUrl ?? process.env.GIT_API_BASE_URL ?? 'https://api.github.com';
+  const token = gitConfig?.accessToken ?? process.env.GIT_ACCESS_TOKEN;
+  
+  if (!token) {
+    throw new Error('Git access token is required (either in database config or GIT_ACCESS_TOKEN environment variable)');
+  }
+
+  return {
+    baseUrl,
+    token,
+    timeout: gitConfig?.timeout ?? parseInt(process.env.GIT_TIMEOUT || '30000'),
+    retryAttempts: parseInt(process.env.GIT_RETRY_ATTEMPTS || '2'),
+    retryDelay: parseInt(process.env.GIT_RETRY_DELAY || '1000'),
+  };
+}
+
+/**
+ * 从环境变量创建 Git 客户端配置（向后兼容）
  * @returns Git 客户端配置
  */
 export function createGitClientConfig(): GitClientConfig {

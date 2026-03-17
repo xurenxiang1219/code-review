@@ -1,6 +1,7 @@
 'use client';
 
 import { useState, useEffect } from 'react';
+import { authApiClient } from '@/lib/utils/auth-api-client';
 
 interface StatsData {
   totalReviews: number;
@@ -34,26 +35,20 @@ export function ReviewStats() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
-  // 获取统计数据
+  /**
+   * 获取统计数据
+   */
   const fetchStats = async () => {
     try {
       setLoading(true);
       setError(null);
 
-      // 由于没有专门的统计API，我们从reviews API获取数据并计算统计
-      const response = await fetch('/api/reviews?pageSize=1000');
-      const data = await response.json();
-
-      if (data.code !== 0) {
-        throw new Error(data.msg || '获取统计数据失败');
-      }
-
-      const reviews = data.data?.items || [];
-      
-      // 计算统计数据
+      const data = await authApiClient.get('/api/reviews', { pageSize: '1000' });
+      const reviews = data?.items || [];
       const now = new Date();
       const weekAgo = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000);
 
+      // 计算基础统计
       const totalReviews = reviews.length;
       const reviewsThisWeek = reviews.filter((review: any) => 
         new Date(review.created_at) >= weekAgo
@@ -137,6 +132,9 @@ export function ReviewStats() {
     return null;
   }
 
+  /**
+   * 统计卡片组件
+   */
   const StatCard = ({ title, value, bgColor, textColor }: {
     title: string;
     value: string | number;
@@ -152,6 +150,27 @@ export function ReviewStats() {
         <div className="flex-shrink-0">
           <div className={`w-2 h-12 ${bgColor} rounded-full`}></div>
         </div>
+      </div>
+    </div>
+  );
+
+  /**
+   * 分布详情组件
+   */
+  const DistributionCard = ({ title, items, className = "" }: {
+    title: string;
+    items: Array<{ label: string; value: number; color: string }>;
+    className?: string;
+  }) => (
+    <div className={`bg-white rounded-lg shadow-sm border p-6 ${className}`}>
+      <h3 className="text-base font-semibold text-gray-900 mb-4">{title}</h3>
+      <div className="grid grid-cols-4 gap-4">
+        {items.map(item => (
+          <div key={item.label} className="text-center">
+            <div className={`text-2xl font-bold ${item.color}`}>{item.value}</div>
+            <div className="text-sm text-gray-500">{item.label}</div>
+          </div>
+        ))}
       </div>
     </div>
   );
@@ -186,51 +205,27 @@ export function ReviewStats() {
         textColor="text-slate-900"
       />
 
-      {/* 问题分布详情 */}
-      <div className="bg-white rounded-lg shadow-sm border p-6 md:col-span-2">
-        <h3 className="text-base font-semibold text-gray-900 mb-4">问题分布</h3>
-        <div className="grid grid-cols-4 gap-4">
-          <div className="text-center">
-            <div className="text-2xl font-bold text-red-600">{stats.issueDistribution.critical}</div>
-            <div className="text-sm text-gray-500">严重</div>
-          </div>
-          <div className="text-center">
-            <div className="text-2xl font-bold text-orange-600">{stats.issueDistribution.major}</div>
-            <div className="text-sm text-gray-500">重要</div>
-          </div>
-          <div className="text-center">
-            <div className="text-2xl font-bold text-amber-600">{stats.issueDistribution.minor}</div>
-            <div className="text-sm text-gray-500">次要</div>
-          </div>
-          <div className="text-center">
-            <div className="text-2xl font-bold text-blue-600">{stats.issueDistribution.suggestion}</div>
-            <div className="text-sm text-gray-500">建议</div>
-          </div>
-        </div>
-      </div>
+      <DistributionCard
+        title="问题分布"
+        className="md:col-span-2"
+        items={[
+          { label: '严重', value: stats.issueDistribution.critical, color: 'text-red-600' },
+          { label: '重要', value: stats.issueDistribution.major, color: 'text-orange-600' },
+          { label: '次要', value: stats.issueDistribution.minor, color: 'text-amber-600' },
+          { label: '建议', value: stats.issueDistribution.suggestion, color: 'text-blue-600' },
+        ]}
+      />
 
-      {/* 状态分布 */}
-      <div className="bg-white rounded-lg shadow-sm border p-6 md:col-span-2">
-        <h3 className="text-base font-semibold text-gray-900 mb-4">审查状态</h3>
-        <div className="grid grid-cols-4 gap-4">
-          <div className="text-center">
-            <div className="text-2xl font-bold text-amber-600">{stats.statusDistribution.pending}</div>
-            <div className="text-sm text-gray-500">待处理</div>
-          </div>
-          <div className="text-center">
-            <div className="text-2xl font-bold text-blue-600">{stats.statusDistribution.processing}</div>
-            <div className="text-sm text-gray-500">处理中</div>
-          </div>
-          <div className="text-center">
-            <div className="text-2xl font-bold text-emerald-600">{stats.statusDistribution.completed}</div>
-            <div className="text-sm text-gray-500">已完成</div>
-          </div>
-          <div className="text-center">
-            <div className="text-2xl font-bold text-red-600">{stats.statusDistribution.failed}</div>
-            <div className="text-sm text-gray-500">失败</div>
-          </div>
-        </div>
-      </div>
+      <DistributionCard
+        title="审查状态"
+        className="md:col-span-2"
+        items={[
+          { label: '待处理', value: stats.statusDistribution.pending, color: 'text-amber-600' },
+          { label: '处理中', value: stats.statusDistribution.processing, color: 'text-blue-600' },
+          { label: '已完成', value: stats.statusDistribution.completed, color: 'text-emerald-600' },
+          { label: '失败', value: stats.statusDistribution.failed, color: 'text-red-600' },
+        ]}
+      />
     </div>
   );
 }

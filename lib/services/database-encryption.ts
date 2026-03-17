@@ -90,21 +90,16 @@ export class DatabaseEncryptionService {
   decryptRecord<T extends Record<string, any>>(tableName: string, record: T): T {
     const sensitiveFields = this.tableConfigs.get(tableName);
     
-    if (!sensitiveFields || sensitiveFields.length === 0) {
+    if (!sensitiveFields?.length) {
       return record;
     }
 
     try {
-      logger.debug('开始解密数据库记录', {
-        tableName,
-        recordId: record.id || 'unknown',
-      });
-
       const decryptedRecord = sensitiveDataManager.decryptDatabaseRecord(record, sensitiveFields);
-
+      
       logger.debug('数据库记录解密完成', {
         tableName,
-        recordId: record.id || 'unknown',
+        recordId: record.id || 'unknown'
       });
 
       return decryptedRecord;
@@ -113,10 +108,14 @@ export class DatabaseEncryptionService {
         tableName,
         recordId: record.id || 'unknown',
         error: error instanceof Error ? error.message : String(error),
+        sensitiveFields
       });
       
       // 解密失败时返回原记录，避免系统崩溃
-      logger.warn('解密失败，返回原记录', { tableName, recordId: record.id || 'unknown' });
+      logger.warn('解密失败，返回原记录', { 
+        tableName, 
+        recordId: record.id || 'unknown' 
+      });
       return record;
     }
   }

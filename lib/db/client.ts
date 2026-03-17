@@ -19,6 +19,7 @@ interface DatabaseConfig {
 
 /**
  * 获取数据库配置
+ * 从环境变量读取数据库连接参数
  */
 function getDatabaseConfig(): DatabaseConfig {
   return {
@@ -41,10 +42,10 @@ function getDatabaseConfig(): DatabaseConfig {
 class DatabaseClient {
   private static instance: DatabaseClient | null = null;
   private pool: mysql.Pool | null = null;
-  private config: DatabaseConfig;
+  private config: DatabaseConfig | null = null;
 
   private constructor() {
-    this.config = getDatabaseConfig();
+    // 不在构造函数中初始化配置，而是在 initialize 时初始化
   }
 
   /**
@@ -64,6 +65,9 @@ class DatabaseClient {
     if (this.pool) {
       return;
     }
+
+    // 在初始化时读取配置，确保环境变量已加载
+    this.config = getDatabaseConfig();
 
     try {
       this.pool = mysql.createPool({
@@ -246,10 +250,8 @@ class DatabaseClient {
    * 获取连接池状态
    * 注意：mysql2 库不提供实时连接数指标，仅返回配置信息
    */
-  getPoolStatus(): {
-    connectionLimit: number;
-  } {
-    if (!this.pool) {
+  getPoolStatus(): { connectionLimit: number } {
+    if (!this.pool || !this.config) {
       throw new Error('数据库连接池未初始化');
     }
 

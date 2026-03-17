@@ -19,7 +19,13 @@
     "db:rollback": "tsx scripts/migrate.ts rollback",
     "db:reset": "tsx scripts/migrate.ts reset",
     "worker:start": "tsx scripts/worker.ts",
-    "worker:dev": "tsx --watch scripts/worker.ts"
+    "worker:dev": "tsx --watch scripts/worker.ts",
+    "polling:start": "tsx scripts/polling-scanner.ts",
+    "polling:dev": "tsx --watch scripts/polling-scanner.ts",
+    "services:start": "concurrently \"pnpm worker:start\" \"pnpm polling:start\"",
+    "services:dev": "concurrently \"pnpm worker:dev\" \"pnpm polling:dev\"",
+    "init:auth": "tsx scripts/init-auth.ts",
+    "init:monitoring": "tsx scripts/init-monitoring.ts"
   },
   "dependencies": {
     "@types/bcryptjs": "^3.0.0",
@@ -48,6 +54,7 @@
     "@types/uuid": "^10.0.0",
     "@vitest/ui": "^4.1.0",
     "autoprefixer": "^10.4.27",
+    "concurrently": "^9.1.0",
     "eslint": "^9",
     "eslint-config-next": "^16.0.0",
     "jsdom": "^28.1.0",

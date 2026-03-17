@@ -7,6 +7,7 @@ import { FileFilterSection } from './sections/FileFilterSection';
 import { AIModelSection } from './sections/AIModelSection';
 import { PollingSection } from './sections/PollingSection';
 import { NotificationSection } from './sections/NotificationSection';
+import { GitSection } from './sections/GitSection';
 
 interface ConfigFormProps {
   config: FullReviewConfig;
@@ -24,7 +25,31 @@ interface ConfigFormProps {
  * - 响应式设计
  */
 export function ConfigForm({ config, onSave, repository }: ConfigFormProps) {
-  const [formData, setFormData] = useState(config);
+  // 确保 config 对象存在，避免空值错误
+  const safeConfig = config ?? {
+    id: '',
+    repository: '',
+    reviewFocus: ['security', 'performance', 'readability'],
+    fileWhitelist: ['*.ts', '*.tsx', '*.js', '*.jsx'],
+    ignorePatterns: ['node_modules/**', 'dist/**'],
+    aiModel: {
+      provider: 'openai',
+      model: 'gpt-4',
+      temperature: 0.3,
+      maxTokens: 4000
+    },
+    pollingEnabled: false,
+    pollingInterval: 300,
+    notificationConfig: {
+      email: { enabled: false, recipients: [], criticalOnly: true },
+      im: { enabled: false, channels: [], webhook: '' },
+      gitComment: { enabled: true, summaryOnly: false }
+    },
+    createdAt: new Date(),
+    updatedAt: new Date()
+  };
+
+  const [formData, setFormData] = useState(safeConfig);
   const [saving, setSaving] = useState(false);
   const [errors, setErrors] = useState<Record<string, string>>({});
 
@@ -37,25 +62,35 @@ export function ConfigForm({ config, onSave, repository }: ConfigFormProps) {
 
   const validateForm = (): boolean => {
     const newErrors: Record<string, string> = {};
+    const safeFormData = formData ?? safeConfig;
 
-    if (!formData.fileWhitelist || formData.fileWhitelist.length === 0) {
+    // 验证文件白名单
+    if (!safeFormData.fileWhitelist?.length) {
       newErrors.fileWhitelist = '文件白名单不能为空';
     }
 
-    if (formData.pollingEnabled && (formData.pollingInterval < 30 || formData.pollingInterval > 3600)) {
+    // 验证轮询间隔
+    if (safeFormData.pollingEnabled && 
+        (safeFormData.pollingInterval < 30 || safeFormData.pollingInterval > 3600)) {
       newErrors.pollingInterval = '轮询间隔必须在 30-3600 秒之间';
     }
 
-    if (!formData.aiModel.provider) {
+    // 验证AI模型配置
+    const aiModel = safeFormData.aiModel ?? {};
+    if (!aiModel.provider) {
       newErrors['aiModel.provider'] = '模型提供商不能为空';
     }
-    if (!formData.aiModel.model) {
+    if (!aiModel.model) {
       newErrors['aiModel.model'] = '模型名称不能为空';
     }
-    if (formData.aiModel.temperature < 0 || formData.aiModel.temperature > 2) {
+    
+    const temperature = aiModel.temperature ?? 0;
+    if (temperature < 0 || temperature > 2) {
       newErrors['aiModel.temperature'] = '温度必须在 0-2 之间';
     }
-    if (formData.aiModel.maxTokens < 100 || formData.aiModel.maxTokens > 8000) {
+    
+    const maxTokens = aiModel.maxTokens ?? 0;
+    if (maxTokens < 100 || maxTokens > 8000) {
       newErrors['aiModel.maxTokens'] = '最大 token 数必须在 100-8000 之间';
     }
 
@@ -93,37 +128,41 @@ export function ConfigForm({ config, onSave, repository }: ConfigFormProps) {
       
       <form className="p-6 space-y-6" onSubmit={handleSubmit}>
         <ReviewFocusSection 
-          value={formData.reviewFocus}
+          value={formData?.reviewFocus ?? []}
           onChange={(value) => updateFormData('reviewFocus', value)}
           error={errors.reviewFocus}
         />
 
         <FileFilterSection
-          whitelist={formData.fileWhitelist}
-          ignorePatterns={formData.ignorePatterns}
+          whitelist={formData?.fileWhitelist ?? []}
+          ignorePatterns={formData?.ignorePatterns ?? []}
           onWhitelistChange={(value) => updateFormData('fileWhitelist', value)}
           onIgnorePatternsChange={(value) => updateFormData('ignorePatterns', value)}
           errors={errors}
         />
 
         <AIModelSection
-          value={formData.aiModel}
+          value={formData?.aiModel ?? safeConfig.aiModel}
           onChange={(value) => updateFormData('aiModel', value)}
           errors={errors}
         />
 
+        <GitSection
+          value={formData?.git ?? { defaultBranch: 'main', watchedBranches: ['main'] }}
+          onChange={(value) => updateFormData('git', value)}
+        />
+
         <PollingSection
-          enabled={formData.pollingEnabled}
-          interval={formData.pollingInterval}
+          enabled={formData?.pollingEnabled ?? false}
+          interval={formData?.pollingInterval ?? 300}
           onEnabledChange={(value) => updateFormData('pollingEnabled', value)}
           onIntervalChange={(value) => updateFormData('pollingInterval', value)}
           error={errors.pollingInterval}
         />
 
         <NotificationSection
-          value={formData.notificationConfig}
+          value={formData?.notificationConfig ?? safeConfig.notificationConfig}
           onChange={(value) => updateFormData('notificationConfig', value)}
-          errors={errors}
         />
 
         <div className="flex justify-end pt-6 border-t border-gray-200">

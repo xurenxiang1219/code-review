@@ -1,8 +1,12 @@
 #!/usr/bin/env tsx
 
+import dotenv from 'dotenv';
 import { createPollingScannerFromEnv, PollingScanner } from '@/lib/services/polling-scanner';
 import { logger } from '@/lib/utils/logger';
 import RedisClient from '@/lib/cache/redis-client';
+
+// 加载环境变量
+dotenv.config();
 
 /**
  * Polling Scanner 进程配置
@@ -156,12 +160,19 @@ class PollingScannerProcess {
   /**
    * 检查依赖服务
    */
+  /**
+   * 检查依赖服务健康状态
+   */
   private async checkDependencies(): Promise<void> {
     this.processLogger.info('检查依赖服务健康状态');
 
+    // 初始化数据库连接
+    const { db } = await import('@/lib/db/client');
+    await db.initialize();
+
     const checks = [
       { name: 'Redis', check: () => RedisClient.healthCheck() },
-      // 可以添加更多依赖检查，如数据库等
+      { name: 'MySQL', check: () => db.healthCheck() },
     ];
 
     for (const { name, check } of checks) {
@@ -182,81 +193,77 @@ class PollingScannerProcess {
   /**
    * 初始化扫描器实例
    */
+  /**
+   * 初始化轮询扫描器实例
+   */
   private async initializeScanners(): Promise<void> {
-    this.processLogger.info('初始化扫描器实例', {
-      repositories: this.config.repositories,
-    });
+    this.processLogger.info('初始化扫描器实例');
 
-    if (this.config.repositories.length === 0) {
-      this.processLogger.warn('未配置任何仓库，将使用环境变量中的单个仓库配置');
-      
-      // 尝试从环境变量创建单个扫描器
-      try {
-        const scanner = createPollingScannerFromEnv();
-        const scannerId = 'default';
-        
-        this.scanners.set(scannerId, {
-          id: scannerId,
-          scanner,
-          repository: process.env.GIT_REPOSITORY || 'unknown',
-          branch: process.env.GIT_TARGET_BRANCH || 'uat',
-          config: scanner.getStatus().config,
-        });
+    try {
+      const { configRepository } = await import('@/lib/db/repositories/config');
+      const pollingConfigs = await configRepository.getPollingEnabledConfigs();
 
-        scanner.start();
-        this.processLogger.info('默认扫描器已启动', { scannerId });
-        
-      } catch (error) {
-        const errorInfo = this.extractErrorInfo(error);
-        this.processLogger.error('创建默认扫描器失败', errorInfo);
-        throw error;
+      if (!Array.isArray(pollingConfigs) || pollingConfigs.length === 0) {
+        this.processLogger.warn('数据库中未找到启用轮询的配置');
+        return;
       }
-      return;
-    }
 
-    // 为每个仓库创建扫描器
-    for (const repository of this.config.repositories) {
-      try {
-        const scannerId = this.generateScannerId(repository);
-        const scannerConfig = this.buildScannerConfig(repository);
-        
-        const scanner = this.createScanner(scannerConfig);
-        
-        this.scanners.set(scannerId, {
-          id: scannerId,
-          scanner,
-          repository: scannerConfig.repository,
-          branch: scannerConfig.branch,
-          config: scannerConfig,
-        });
+      this.processLogger.info('从数据库获取到轮询配置', { 
+        count: pollingConfigs.length,
+        repositories: pollingConfigs.map(c => c?.repository).filter(Boolean)
+      });
 
-        scanner.start();
-        
-        this.processLogger.info('扫描器已启动', {
-          scannerId,
-          repository: scannerConfig.repository,
-          branch: scannerConfig.branch,
-          interval: scannerConfig.interval,
-        });
+      // 为每个配置创建扫描器
+      for (const config of pollingConfigs) {
+        if (!config?.repository) {
+          this.processLogger.warn('跳过无效配置：缺少仓库信息', { config });
+          continue;
+        }
 
-      } catch (error) {
-        const errorInfo = this.extractErrorInfo(error);
-        this.processLogger.error('创建扫描器失败', {
-          repository,
-          ...errorInfo,
-        });
-        // 继续创建其他扫描器
+        try {
+          const scannerId = this.generateScannerId(config.repository);
+          const scanner = await this.createScannerFromDbConfig(config);
+          
+          this.scanners.set(scannerId, {
+            id: scannerId,
+            scanner,
+            repository: config.repository,
+            branch: config.git?.defaultBranch ?? 'main',
+            config: scanner.getStatus().config,
+          });
+
+          scanner.start();
+          
+          this.processLogger.info('扫描器已启动', {
+            scannerId,
+            repository: config.repository,
+            branch: config.git?.defaultBranch ?? 'main',
+            interval: config.pollingInterval,
+          });
+
+        } catch (error) {
+          const errorInfo = this.extractErrorInfo(error);
+          this.processLogger.error('创建扫描器失败', {
+            repository: config.repository,
+            ...errorInfo,
+          });
+        }
       }
-    }
 
-    if (this.scanners.size === 0) {
-      throw new Error('未能成功创建任何扫描器实例');
-    }
+      if (this.scanners.size === 0) {
+        throw new Error('未能成功创建任何扫描器实例');
+      }
 
-    this.processLogger.info('扫描器初始化完成', {
-      totalScanners: this.scanners.size,
-      successfulScanners: this.scanners.size,
-    });
+      this.processLogger.info('扫描器初始化完成', {
+        totalConfigs: pollingConfigs.length,
+        successfulScanners: this.scanners.size,
+      });
+
+    } catch (error) {
+      const errorInfo = this.extractErrorInfo(error);
+      this.processLogger.error('初始化扫描器失败', errorInfo);
+      throw error;
+    }
   }
   /**
    * 生成扫描器 ID
@@ -282,7 +289,41 @@ class PollingScannerProcess {
   }
 
   /**
-   * 创建扫描器实例
+   * 从数据库配置创建扫描器实例
+   */
+  /**
+   * 从数据库配置创建轮询扫描器
+   * @param config 数据库中的配置对象
+   * @returns 轮询扫描器实例
+   */
+  private async createScannerFromDbConfig(config: any): Promise<PollingScanner> {
+    const { createPollingScanner } = await import('@/lib/services/polling-scanner');
+    const { createGitClient, createGitClientConfigFromDb } = await import('@/lib/git/client');
+    
+    // 从数据库配置创建 Git 客户端配置，使用空值合并操作符确保安全访问
+    const gitClientConfig = createGitClientConfigFromDb({
+      baseUrl: config.git?.baseUrl,
+      accessToken: config.git?.accessToken,
+      timeout: config.git?.timeout,
+    });
+    
+    const gitClient = createGitClient(gitClientConfig);
+    
+    // 创建轮询扫描器配置，使用空值合并操作符提供默认值
+    const scannerConfig = {
+      repository: config.repository,
+      branch: config.git?.defaultBranch ?? 'main',
+      interval: config.pollingInterval,
+      enabled: config.pollingEnabled,
+      autoEnqueue: true,
+      maxCommitsPerScan: 50,
+    };
+    
+    return createPollingScanner(scannerConfig, gitClient);
+  }
+
+  /**
+   * 创建扫描器实例（向后兼容）
    */
   private createScanner(config: any): PollingScanner {
     const { createPollingScanner } = require('@/lib/services/polling-scanner');

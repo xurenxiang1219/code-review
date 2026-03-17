@@ -6,6 +6,7 @@ import { alertManager } from '@/lib/services/alert-manager';
 import { ApiCode } from '@/lib/constants/api-codes';
 import { authenticateApiRoute } from '@/lib/middleware/api-auth';
 import { Permission } from '@/types/auth';
+import '@/lib/init/auth';
 
 /**
  * 获取监控仪表板数据

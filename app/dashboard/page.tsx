@@ -3,6 +3,8 @@
 import { useState, useEffect } from 'react';
 import { ReviewCard } from '@/components/review/ReviewCard';
 import { ReviewStats } from '@/components/review/ReviewStats';
+import { useAuth } from '@/lib/contexts/auth-context';
+import { LoadingSpinner } from '@/components/ui/LoadingSpinner';
 import type { ReviewEntity } from '@/lib/db/repositories/review';
 import type { ApiResponse } from '@/types/api';
 
@@ -43,6 +45,8 @@ export default function DashboardPage() {
     to: '',
   });
 
+  const { isAuthenticated, isLoading } = useAuth();
+
   const fetchReviews = async (page = 1) => {
     try {
       setLoading(true);
@@ -59,7 +63,13 @@ export default function DashboardPage() {
         }
       });
 
-      const response = await fetch(`/api/reviews?${params}`);
+      const token = localStorage.getItem('auth_token');
+      const response = await fetch(`/api/reviews?${params}`, {
+        headers: {
+          'Authorization': `Bearer ${token}`,
+        },
+      });
+      
       const data: ApiResponse<ReviewsData> = await response.json();
       if (data.code !== 0) {
         throw new Error(data.msg || '获取数据失败');
@@ -101,9 +111,23 @@ export default function DashboardPage() {
   };
 
   useEffect(() => {
-    fetchReviews();
+    if (isAuthenticated) {
+      fetchReviews();
+    }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [isAuthenticated]);
+
+  if (isLoading) {
+    return (
+      <div className="min-h-screen flex items-center justify-center">
+        <LoadingSpinner size="lg" text="加载中..." />
+      </div>
+    );
+  }
+
+  if (!isAuthenticated) {
+    return null;
+  }
 
   return (
     <div className="min-h-screen bg-gray-50">

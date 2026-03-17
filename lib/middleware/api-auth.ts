@@ -191,6 +191,18 @@ export async function authenticateApiRoute(
     const user = authResult.user!;
 
     if (requiredPermissions.length > 0 && !PermissionUtils.hasAnyPermission(user, requiredPermissions)) {
+      const permissionDebugInfo = {
+        requiredPermissions,
+        userPermissions: user.permissions,
+        userRole: user.role,
+        hasPermission: requiredPermissions.map(p => ({
+          permission: p,
+          hasIt: PermissionUtils.hasPermission(user, p)
+        }))
+      };
+
+      console.log('权限检查失败:', permissionDebugInfo);
+
       if (enableAudit) {
         await logSecurityEvent(
           request,

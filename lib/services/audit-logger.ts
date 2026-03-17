@@ -99,7 +99,6 @@ export class AuditLoggerService {
 
   /**
    * 保存审计日志到数据库
-   * @param auditLog - 审计日志
    */
   private async saveAuditLog(auditLog: AuditLog): Promise<void> {
     const query = `
@@ -116,14 +115,14 @@ export class AuditLoggerService {
       auditLog.userEmail,
       auditLog.action,
       auditLog.resource,
-      auditLog.resourceId,
+      auditLog.resourceId ?? null,
       auditLog.method,
       auditLog.path,
       auditLog.ip,
       auditLog.userAgent,
       auditLog.requestId,
       auditLog.success,
-      auditLog.error,
+      auditLog.error ?? null,
       auditLog.statusCode,
       auditLog.duration,
       auditLog.createdAt,
@@ -134,7 +133,6 @@ export class AuditLoggerService {
 
   /**
    * 保存安全事件到数据库
-   * @param event - 安全事件
    */
   private async saveSecurityEvent(event: SecurityEvent): Promise<void> {
     const query = `
@@ -150,10 +148,10 @@ export class AuditLoggerService {
       event.severity,
       event.description,
       event.ip,
-      event.userAgent || null,
-      event.path || null,
-      event.userId || null,
-      JSON.stringify(event.metadata || {}),
+      event.userAgent ?? null,
+      event.path ?? null,
+      event.userId ?? null,
+      JSON.stringify(event.metadata ?? {}),
       event.createdAt,
     ];
 

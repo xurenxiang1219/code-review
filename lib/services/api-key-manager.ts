@@ -101,7 +101,9 @@ export class ApiKeyManagerService {
 
       return { success: true, user };
     } catch (error) {
-      logger.error('验证 API Key 失败', { error });
+      logger.error('验证 API Key 失败', { 
+        error: error instanceof Error ? error.message : String(error)
+      });
       return {
         success: false,
         error: '验证失败',
@@ -216,11 +218,26 @@ export class ApiKeyManagerService {
     }
 
     const row = rows[0];
+    
+    // 处理权限字段 - 兼容字符串和对象格式
+    let permissions: Permission[];
+    try {
+      permissions = typeof row.permissions === 'string' 
+        ? JSON.parse(row.permissions) 
+        : row.permissions;
+    } catch (error) {
+      logger.error('权限解析失败', { 
+        permissions: row.permissions,
+        error: error instanceof Error ? error.message : String(error)
+      });
+      throw new Error('权限数据格式错误');
+    }
+    
     return {
       id: row.id,
       name: row.name,
       userId: row.user_id,
-      permissions: JSON.parse(row.permissions),
+      permissions,
       enabled: row.enabled,
       expiresAt: row.expires_at ? new Date(row.expires_at) : undefined,
       lastUsedAt: row.last_used_at ? new Date(row.last_used_at) : undefined,
@@ -248,7 +265,6 @@ export class ApiKeyManagerService {
    * @returns 用户角色
    */
   private inferRoleFromPermissions(permissions: Permission[]): any {
-    // 简单的角色推断逻辑
     if (permissions.includes('system:admin' as Permission)) {
       return 'admin';
     }

@@ -77,6 +77,46 @@
 4. 是否有冗余的条件判断？
 5. 命名是否清晰一致？
 6. 检查是否有一些未初始化的字段，避免出现**LateInitializationError: Field xxx has not been initialized.**
+7. **必须使用 ES 新语法防止空值错误**：
+   - 使用可选链操作符 `?.` 访问对象属性
+   - 使用空值合并操作符 `??` 提供默认值
+   - 使用逻辑或操作符 `||` 处理 falsy 值
+   - 数组操作前必须检查是否为数组：`Array.isArray(value) && value.includes(...)`
+
+### ES 新语法使用规范
+
+**空值安全访问**：
+```javascript
+// ❌ 错误写法
+value.includes(item)
+obj.prop.method()
+
+// ✅ 正确写法
+value?.includes?.(item)
+obj?.prop?.method?.()
+```
+
+**数组安全操作**：
+```javascript
+// ❌ 错误写法
+value.includes(focus.id)
+items.map(item => ...)
+
+// ✅ 正确写法
+(value || []).includes(focus.id)
+(items || []).map(item => ...)
+Array.isArray(value) && value.includes(focus.id)
+```
+
+**默认值处理**：
+```javascript
+// ❌ 错误写法
+const result = value || defaultValue; // 0, false 也会被替换
+
+// ✅ 正确写法
+const result = value ?? defaultValue; // 只有 null/undefined 才使用默认值
+const result = value || defaultValue; // 需要处理所有 falsy 值时使用
+```
 
 ---
 

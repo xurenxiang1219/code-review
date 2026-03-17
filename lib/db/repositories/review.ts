@@ -463,7 +463,11 @@ export class ReviewRepository {
       FROM reviews ${whereClause}
     `, values);
 
-    // 获取问题统计
+    // 获取问题统计 - 仅统计已完成的审查
+    const issueStatsWhereClause = whereClause 
+      ? `${whereClause} AND status = 'completed'`
+      : 'WHERE status = \'completed\'';
+      
     const issueStats = await db.queryOne<{
       total_issues: number;
       critical_issues: number;
@@ -478,7 +482,7 @@ export class ReviewRepository {
         SUM(minor_count) as minor_issues,
         SUM(suggestion_count) as suggestions
       FROM reviews 
-      ${whereClause} AND status = 'completed'
+      ${issueStatsWhereClause}
     `, values);
 
     const total = basicStats?.total || 0;
@@ -639,7 +643,12 @@ async getTopIssueCategories(timeRange: StatsTimeRange = {}): Promise<Array<{
  * @param timeRange 时间范围参数
  * @returns WHERE子句和参数
  */
-private buildStatsWhereClause(timeRange: StatsTimeRange): { whereClause: string; values: any[] } {
+  /**
+   * 构建统计查询的WHERE子句
+   * @param timeRange - 时间范围和过滤条件
+   * @returns WHERE子句和对应的参数值
+   */
+  private buildStatsWhereClause(timeRange: StatsTimeRange): { whereClause: string; values: any[] } {
   const { from, to, repository, branch } = timeRange;
   const conditions: string[] = [];
   const values: any[] = [];

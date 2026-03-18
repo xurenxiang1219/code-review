@@ -149,6 +149,7 @@ class RedisClient {
 
   /**
    * 健康检查
+   * @returns 健康状态，true 表示健康，false 表示不健康
    */
   static async healthCheck(): Promise<boolean> {
     try {
@@ -164,9 +165,17 @@ class RedisClient {
       
       return isHealthy;
     } catch (error) {
+      const isDevelopment = process.env.NODE_ENV === 'development';
+      
       logger.error('Redis 健康检查失败', { 
         error: error instanceof Error ? error.message : String(error) 
       });
+      
+      // 在开发环境中，Redis 连接失败不应该阻止应用启动
+      if (isDevelopment) {
+        logger.warn('开发环境中 Redis 连接失败，但继续运行');
+      }
+      
       return false;
     }
   }

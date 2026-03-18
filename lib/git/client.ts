@@ -67,6 +67,12 @@ export class GitClient {
    * @param repository - 仓库路径 (owner/repo)
    * @returns 提交信息
    */
+  /**
+   * 获取单个提交信息
+   * @param commitHash 提交哈希值
+   * @param repository 仓库名称
+   * @returns 提交信息
+   */
   async getCommit(commitHash: string, repository: string): Promise<CommitInfo> {
     const normalizedRepo = this.normalizeRepository(repository);
     
@@ -79,7 +85,7 @@ export class GitClient {
 
         const commitInfo: CommitInfo = {
           hash: response.sha,
-          branch: '', // 需要单独获取分支信息
+          branch: '',
           repository: normalizedRepo,
           author: {
             name: response.commit.author.name,
@@ -106,6 +112,12 @@ export class GitClient {
    * 获取提交的差异信息
    * @param commitHash - 提交哈希值
    * @param repository - 仓库路径 (owner/repo)
+   * @returns 差异信息
+   */
+  /**
+   * 获取提交的差异信息
+   * @param commitHash 提交哈希值
+   * @param repository 仓库名称
    * @returns 差异信息
    */
   async getDiff(commitHash: string, repository: string): Promise<DiffInfo> {
@@ -178,6 +190,14 @@ export class GitClient {
     return repository.replace(/\.git$/, '');
   }
 
+  /**
+   * 获取提交列表
+   * @param repository 仓库名称
+   * @param branch 分支名称
+   * @param since 起始时间
+   * @param limit 限制数量
+   * @returns 提交信息列表
+   */
   async getCommits(
     repository: string, 
     branch: string, 
@@ -588,34 +608,30 @@ export function createGitClient(config: GitClientConfig): GitClient {
 }
 
 /**
- * 从数据库配置创建 Git 客户端配置
- * @param gitConfig - 数据库中的 Git 配置
- * @returns Git 客户端配置
- */
-export /**
  * 从数据库配置创建Git客户端配置
  * @param gitConfig 数据库中的Git配置对象
  * @returns Git客户端配置
- * @throws 当访问令牌缺失时抛出错误
+ * @throws 当访问令牌缺失且在生产环境时抛出错误
  */
-function createGitClientConfigFromDb(gitConfig: {
+export function createGitClientConfigFromDb(gitConfig: {
   baseUrl?: string;
   accessToken?: string;
   timeout?: number;
 }): GitClientConfig {
   const baseUrl = gitConfig?.baseUrl ?? process.env.GIT_API_BASE_URL ?? 'https://api.github.com';
   const token = gitConfig?.accessToken ?? process.env.GIT_ACCESS_TOKEN;
+  const isDevelopment = process.env.NODE_ENV !== 'production';
   
-  if (!token) {
+  if (!token && !isDevelopment) {
     throw new Error('Git access token is required (either in database config or GIT_ACCESS_TOKEN environment variable)');
   }
 
   return {
     baseUrl,
-    token,
-    timeout: gitConfig?.timeout ?? parseInt(process.env.GIT_TIMEOUT || '30000'),
-    retryAttempts: parseInt(process.env.GIT_RETRY_ATTEMPTS || '2'),
-    retryDelay: parseInt(process.env.GIT_RETRY_DELAY || '1000'),
+    token: token ?? '', // 开发环境中允许空 token
+    timeout: gitConfig?.timeout ?? parseInt(process.env.GIT_TIMEOUT ?? '30000'),
+    retryAttempts: parseInt(process.env.GIT_RETRY_ATTEMPTS ?? '2'),
+    retryDelay: parseInt(process.env.GIT_RETRY_DELAY ?? '1000'),
   };
 }
 
@@ -624,23 +640,58 @@ function createGitClientConfigFromDb(gitConfig: {
  * @returns Git 客户端配置
  */
 export function createGitClientConfig(): GitClientConfig {
-  const baseUrl = process.env.GIT_API_BASE_URL || 'https://api.github.com';
+  const baseUrl = process.env.GIT_API_BASE_URL ?? 'https://api.github.com';
   const token = process.env.GIT_ACCESS_TOKEN;
+  const isDevelopment = process.env.NODE_ENV !== 'production';
   
-  if (!token) {
+  if (!token && !isDevelopment) {
     throw new Error('GIT_ACCESS_TOKEN environment variable is required');
   }
 
   return {
     baseUrl,
-    token,
-    timeout: parseInt(process.env.GIT_TIMEOUT || '30000'),
-    retryAttempts: parseInt(process.env.GIT_RETRY_ATTEMPTS || '2'),
-    retryDelay: parseInt(process.env.GIT_RETRY_DELAY || '1000'),
+    token: token ?? '', // 开发环境中允许空 token
+    timeout: parseInt(process.env.GIT_TIMEOUT ?? '30000'),
+    retryAttempts: parseInt(process.env.GIT_RETRY_ATTEMPTS ?? '2'),
+    retryDelay: parseInt(process.env.GIT_RETRY_DELAY ?? '1000'),
   };
+}
+
+/**
+ * 创建默认 Git 客户端实例
+ * 在开发环境中提供容错机制，避免启动时的配置检查失败
+ * @returns Git 客户端实例
+ */
+/**
+ * 创建默认 Git 客户端实例
+ * 在开发环境中提供容错机制，避免启动时的配置检查失败
+ * @returns Git 客户端实例
+ */
+function createDefaultGitClient(): GitClient {
+  const isDevelopment = process.env.NODE_ENV !== 'production';
+  
+  try {
+    return createGitClient(createGitClientConfig());
+  } catch (error) {
+    if (!isDevelopment) {
+      throw error;
+    }
+
+    const errorMessage = error instanceof Error ? error.message : String(error);
+    console.warn('Git 配置失败，使用模拟客户端:', errorMessage);
+    
+    // 开发环境使用默认配置创建模拟客户端
+    return createGitClient({
+      baseUrl: 'https://api.github.com',
+      token: '',
+      timeout: 30000,
+      retryAttempts: 2,
+      retryDelay: 1000,
+    });
+  }
 }
 
 /**
  * 默认 Git 客户端实例
  */
-export const gitClient = createGitClient(createGitClientConfig());
+export const gitClient = createDefaultGitClient();

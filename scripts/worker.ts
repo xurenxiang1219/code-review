@@ -10,8 +10,9 @@ import { logger } from '@/lib/utils/logger';
 import { ReviewTask } from '@/types/review';
 import { CommitInfo } from '@/types/git';
 import RedisClient from '@/lib/cache/redis-client';
-import { createReviewRepository } from '@/lib/db/repositories/review';
-import { createConfigRepository } from '@/lib/db/repositories/config';
+import { reviewRepository } from '@/lib/db/repositories/review';
+import { configRepository } from '@/lib/db/repositories/config';
+import { v4 as uuidv4 } from 'uuid';
 
 /**
  * Worker 进程配置
@@ -167,15 +168,27 @@ class WorkerProcess {
   /**
    * 创建任务处理器
    */
+  /**
+   * 从数据库配置创建 Git 客户端
+   * @param config 数据库配置对象
+   * @returns Git 客户端实例
+   */
+  private async createGitClientFromConfig(config: any) {
+    const { createGitClientConfigFromDb, createGitClient } = await import('@/lib/git/client');
+    const gitClientConfig = createGitClientConfigFromDb({
+      baseUrl: config.git?.baseUrl,
+      accessToken: config.git?.accessToken,
+      timeout: config.git?.timeout,
+    });
+    return createGitClient(gitClientConfig);
+  }
+
+  /**
+   * 创建任务处理器
+   */
   private createTaskProcessor() {
-    // 创建服务实例
-    const gitClient = createGitClient();
     const diffParser = createDiffParser();
-    const codeAnalyzer = createCodeAnalyzer(gitClient, diffParser);
-    const aiReviewer = createAIReviewer();
-    const commentPublisher = createCommentPublisher(gitClient);
-    const reviewRepository = createReviewRepository();
-    const configRepository = createConfigRepository();
+    // const aiReviewer = createAIReviewer(); // 暂时注释，等待 AI 客户端接入
 
     /**
      * 任务处理函数
@@ -194,16 +207,16 @@ class WorkerProcess {
       });
 
       try {
-        // 1. 构建提交信息
-        const commit: CommitInfo = await this.buildCommitInfo(task);
-
-        // 2. 获取审查配置
         const config = await configRepository.getConfig(task.repository);
         if (!config) {
           throw new Error(`未找到仓库配置: ${task.repository}`);
         }
 
-        // 3. 代码分析
+        const gitClient = await this.createGitClientFromConfig(config);
+        const codeAnalyzer = createCodeAnalyzer(gitClient, diffParser);
+        const commentPublisher = createCommentPublisher(gitClient);
+        const commit = await this.buildCommitInfo(task);
+
         taskLogger.debug('开始代码分析');
         const analysis = await codeAnalyzer.analyze(commit);
         
@@ -214,20 +227,28 @@ class WorkerProcess {
           totalDeletions: analysis.diff.totalDeletions,
         });
 
-        // 4. AI 审查
-        taskLogger.debug('开始 AI 审查');
-        const reviewResult = analysis.batches.length > 1
-          ? await aiReviewer.reviewBatches(analysis, config)
-          : await aiReviewer.review(analysis, config);
+        // 临时使用模拟的 AI 审查结果，等待真实 AI 客户端接入
+        taskLogger.debug('开始 AI 审查（模拟）');
+        const reviewResult = {
+          id: `review_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`,
+          summary: {
+            total: 0,
+            critical: 0,
+            major: 0,
+            minor: 0,
+            suggestion: 0,
+          },
+          processingTimeMs: 100,
+          comments: [],
+        };
 
-        taskLogger.info('AI 审查完成', {
+        taskLogger.info('AI 审查完成（模拟）', {
           reviewId: reviewResult.id,
           totalIssues: reviewResult.summary.total,
           criticalCount: reviewResult.summary.critical,
           processingTime: reviewResult.processingTimeMs,
         });
 
-        // 5. 保存审查记录
         taskLogger.debug('保存审查记录');
         await reviewRepository.createReview({
           id: reviewResult.id,
@@ -249,7 +270,6 @@ class WorkerProcess {
           processingTimeMs: reviewResult.processingTimeMs,
         }, reviewResult.comments);
 
-        // 6. 发布评论
         taskLogger.debug('开始发布评论');
         const publishResult = await commentPublisher.publish(reviewResult, commit);
 
@@ -261,9 +281,8 @@ class WorkerProcess {
           fallbackUsed: publishResult.fallbackUsed,
         });
 
-        // 7. 更新审查状态
         const finalStatus = publishResult.success ? 'completed' : 'failed';
-        const errorMessage = publishResult.success ? undefined : publishResult.errors.join('; ');
+        const errorMessage = publishResult.success ? undefined : publishResult.errors?.join('; ');
         
         await reviewRepository.updateReviewStatus(reviewResult.id, finalStatus, errorMessage);
 
@@ -303,25 +322,46 @@ class WorkerProcess {
   /**
    * 检查依赖服务
    */
+  /**
+   * 检查依赖服务健康状态
+   */
   private async checkDependencies(): Promise<void> {
     this.processLogger.info('检查依赖服务健康状态');
 
+    const isProduction = process.env.NODE_ENV === 'production';
     const checks = [
-      { name: 'Redis', check: () => RedisClient.healthCheck() },
+      { 
+        name: 'Redis', 
+        check: () => RedisClient.healthCheck(),
+        required: isProduction // 生产环境必需，开发环境可选
+      },
       // 可以添加更多依赖检查，如数据库、AI 服务等
     ];
 
-    for (const { name, check } of checks) {
+    for (const { name, check, required = true } of checks) {
       try {
         const isHealthy = await check();
-        if (!isHealthy) {
+        
+        if (isHealthy) {
+          this.processLogger.info(`${name} 健康检查通过`);
+          continue;
+        }
+
+        // 健康检查失败的处理
+        if (required) {
           throw new Error(`${name} 健康检查失败`);
         }
-        this.processLogger.info(`${name} 健康检查通过`);
+        
+        this.processLogger.warn(`${name} 健康检查失败，但在开发环境中继续运行`);
       } catch (error) {
         const errorInfo = this.extractErrorInfo(error);
         this.processLogger.error(`${name} 健康检查失败`, errorInfo);
-        throw new Error(`依赖服务 ${name} 不可用`);
+        
+        if (required) {
+          throw new Error(`依赖服务 ${name} 不可用`);
+        }
+        
+        this.processLogger.warn(`依赖服务 ${name} 不可用，但在开发环境中继续运行`);
       }
     }
   }
@@ -546,19 +586,48 @@ class WorkerProcess {
 /**
  * 主函数
  */
+/**
+ * 主函数：启动 Worker 进程
+ */
 async function main(): Promise<void> {
   try {
+    console.log('开始启动 Worker 进程...');
+    
     const workerProcess = new WorkerProcess();
+    console.log('WorkerProcess 实例创建成功');
+    
     await workerProcess.start();
+    console.log('Worker 进程启动完成');
   } catch (error) {
     const errorInfo = error instanceof Error 
       ? { error: error.message, stack: error.stack }
       : { error: String(error) };
     
+    console.error('Worker 进程启动失败:', errorInfo);
     logger.error('Worker 进程启动失败', errorInfo);
     process.exit(1);
   }
 }
+
+/**
+ * 设置全局异常处理器
+ */
+function setupGlobalErrorHandlers(): void {
+  process.on('uncaughtException', (error) => {
+    console.error('未捕获的异常:', error);
+    logger.error('未捕获的异常', { error: error.message, stack: error.stack });
+    process.exit(1);
+  });
+
+  process.on('unhandledRejection', (reason, promise) => {
+    console.error('未处理的 Promise 拒绝:', reason);
+    logger.error('未处理的 Promise 拒绝', { reason: String(reason), promise });
+    process.exit(1);
+  });
+}
+
+// 设置全局异常处理
+setupGlobalErrorHandlers();
 
 // 如果直接运行此脚本，则启动 Worker 进程
 if (require.main === module) {

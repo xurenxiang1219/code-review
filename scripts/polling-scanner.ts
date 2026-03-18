@@ -1,7 +1,7 @@
 #!/usr/bin/env tsx
 
 import dotenv from 'dotenv';
-import { createPollingScannerFromEnv, PollingScanner } from '@/lib/services/polling-scanner';
+import { PollingScanner } from '@/lib/services/polling-scanner';
 import { logger } from '@/lib/utils/logger';
 import RedisClient from '@/lib/cache/redis-client';
 
@@ -267,30 +267,13 @@ class PollingScannerProcess {
   }
   /**
    * 生成扫描器 ID
+   * @param repository 仓库地址
+   * @returns 扫描器ID
    */
   private generateScannerId(repository: string): string {
     return repository.replace(/[^a-zA-Z0-9]/g, '_').toLowerCase();
   }
 
-  /**
-   * 构建扫描器配置
-   */
-  private buildScannerConfig(repository: string) {
-    const envPrefix = `POLLING_${repository.replace(/[^a-zA-Z0-9]/g, '_').toUpperCase()}_`;
-    
-    return {
-      repository,
-      branch: process.env[`${envPrefix}BRANCH`] || this.config.defaultBranch,
-      interval: parseInt(process.env[`${envPrefix}INTERVAL`] || String(this.config.defaultInterval)),
-      enabled: process.env[`${envPrefix}ENABLED`] !== 'false',
-      autoEnqueue: process.env[`${envPrefix}AUTO_ENQUEUE`] !== 'false',
-      maxCommitsPerScan: parseInt(process.env[`${envPrefix}MAX_COMMITS`] || '50'),
-    };
-  }
-
-  /**
-   * 从数据库配置创建扫描器实例
-   */
   /**
    * 从数据库配置创建轮询扫描器
    * @param config 数据库中的配置对象
@@ -320,16 +303,6 @@ class PollingScannerProcess {
     };
     
     return createPollingScanner(scannerConfig, gitClient);
-  }
-
-  /**
-   * 创建扫描器实例（向后兼容）
-   */
-  private createScanner(config: any): PollingScanner {
-    const { createPollingScanner } = require('@/lib/services/polling-scanner');
-    const { createGitClient } = require('@/lib/git/client');
-    const gitClient = createGitClient();
-    return createPollingScanner(config, gitClient);
   }
 
   /**

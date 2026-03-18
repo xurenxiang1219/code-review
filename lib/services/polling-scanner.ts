@@ -48,6 +48,7 @@ export class PollingScanner {
   private gitClient: GitClient;
   private lastScanTime: Date | null = null;
   private scanCount = 0;
+  private currentScanLogId: string | null = null; // 当前扫描的日志ID
 
   constructor(config: PollingScannerConfig, gitClientInstance?: GitClient) {
     // 验证扫描间隔
@@ -170,6 +171,9 @@ export class PollingScanner {
       taskIds: [],
     };
 
+    // 记录扫描开始日志
+    await this.logScanStart(scannedAt);
+
     try {
       // 1. 获取最后处理的提交
       const lastProcessedHash = await commitTrackerRepository.getLastProcessed(
@@ -182,7 +186,7 @@ export class PollingScanner {
       });
 
       // 2. 获取分支的最新提交列表
-      const since = this.lastScanTime || this.calculateSinceTime();
+      const since = this.lastScanTime || await this.calculateSinceTime();
       const commits = await this.gitClient.getCommits(
         this.config.repository,
         this.config.branch,
@@ -195,6 +199,9 @@ export class PollingScanner {
       if (commits.length === 0) {
         this.scannerLogger.debug('未发现新提交');
         this.lastScanTime = scannedAt;
+        
+        // 记录成功日志
+        await this.logScanSuccess(scannedAt, Date.now() - scanStartTime, result);
         return result;
       }
 
@@ -259,10 +266,14 @@ export class PollingScanner {
         errors: result.errors,
       });
 
+      // 记录成功日志
+      await this.logScanSuccess(scannedAt, duration, result);
       return result;
 
     } catch (error) {
       const duration = Date.now() - scanStartTime;
+      const errorMessage = error instanceof Error ? error.message : String(error);
+      
       this.scannerLogger.error('扫描失败', {
         scanNumber: this.scanCount,
         duration,
@@ -273,6 +284,9 @@ export class PollingScanner {
       });
 
       result.errors++;
+      
+      // 记录失败日志
+      await this.logScanError(scannedAt, duration, errorMessage, error);
       return result;
 
     } finally {
@@ -354,13 +368,51 @@ export class PollingScanner {
   }
 
   /**
-   * 计算起始时间（基于扫描间隔）
+   * 计算起始时间（用于获取提交列表）
    * @returns 起始时间
    */
-  private calculateSinceTime(): Date {
-    // 获取最近 2 倍扫描间隔的提交，确保不遗漏
-    const sinceMs = Date.now() - (this.config.interval * 2 * 1000);
-    return new Date(sinceMs);
+  private async calculateSinceTime(): Promise<Date> {
+    const DAYS_7_IN_MS = 7 * 24 * 60 * 60 * 1000;
+    
+    try {
+      // 优先使用上次成功扫描的时间，确保不遗漏任何提交
+      const { pollingLogsRepository } = await import('@/lib/db/repositories/polling-logs');
+      const lastSuccessLog = await pollingLogsRepository.getLastSuccessfulScan(
+        this.config.repository,
+        this.config.branch
+      );
+      
+      if (lastSuccessLog?.completedAt) {
+        this.scannerLogger.debug('使用上次成功扫描时间作为起始点', {
+          lastScanTime: lastSuccessLog.completedAt,
+        });
+        return new Date(lastSuccessLog.completedAt);
+      }
+      
+      // 没有成功扫描记录时的默认处理
+      return this.createDefaultSinceTime(DAYS_7_IN_MS);
+    } catch (error) {
+      this.scannerLogger.warn('获取上次扫描时间失败，使用默认时间范围', {
+        error: error instanceof Error ? error.message : String(error),
+      });
+      
+      return this.createDefaultSinceTime(DAYS_7_IN_MS);
+    }
+  }
+
+  /**
+   * 创建默认的起始时间
+   * @param daysInMs 天数对应的毫秒数
+   * @returns 默认起始时间
+   */
+  private createDefaultSinceTime(daysInMs: number): Date {
+    const defaultSince = new Date(Date.now() - daysInMs);
+    
+    this.scannerLogger.debug('使用默认时间范围', {
+      defaultSince: defaultSince.toISOString(),
+    });
+    
+    return defaultSince;
   }
 
   /**
@@ -377,6 +429,120 @@ export class PollingScanner {
       errors: 0,
       taskIds: [],
     };
+  }
+
+  /**
+   * 记录扫描开始日志
+   * @param startedAt 开始时间
+   */
+  private async logScanStart(startedAt: Date): Promise<void> {
+    try {
+      const { pollingLogsRepository } = await import('@/lib/db/repositories/polling-logs');
+      const log = await pollingLogsRepository.createLog({
+        repository: this.config.repository,
+        branch: this.config.branch,
+        scanType: 'scheduled',
+        status: 'running',
+        message: `开始扫描 ${this.config.repository}/${this.config.branch}`,
+        startedAt,
+      });
+      
+      this.currentScanLogId = log?.id ?? null;
+    } catch (error) {
+      this.scannerLogger.error('记录扫描开始日志失败', {
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+  }
+
+  /**
+   * 记录扫描成功日志
+   * @param startedAt 开始时间
+   * @param durationMs 持续时间
+   * @param result 扫描结果
+   */
+  private async logScanSuccess(startedAt: Date, durationMs: number, result: ScanResult): Promise<void> {
+    try {
+      const { pollingLogsRepository } = await import('@/lib/db/repositories/polling-logs');
+      
+      if (this.currentScanLogId) {
+        // 更新现有日志记录
+        await pollingLogsRepository.updateLog(this.currentScanLogId, {
+          status: 'success',
+          message: `扫描完成，发现 ${result.totalCommits} 个提交，处理 ${result.processedCommits} 个新提交`,
+          durationMs,
+          commitsFound: result.totalCommits,
+          commitsProcessed: result.processedCommits,
+          completedAt: new Date(),
+        });
+        this.currentScanLogId = null;
+      } else {
+        // 如果没有现有记录，创建新记录（兜底逻辑）
+        await pollingLogsRepository.createLog({
+          repository: this.config.repository,
+          branch: this.config.branch,
+          scanType: 'scheduled',
+          status: 'success',
+          message: `扫描完成，发现 ${result.totalCommits} 个提交，处理 ${result.processedCommits} 个新提交`,
+          durationMs,
+          commitsFound: result.totalCommits,
+          commitsProcessed: result.processedCommits,
+          startedAt,
+          completedAt: new Date(),
+        });
+      }
+    } catch (error) {
+      this.scannerLogger.error('记录扫描成功日志失败', {
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+  }
+
+  /**
+   * 记录扫描失败日志
+   * @param startedAt 开始时间
+   * @param durationMs 持续时间
+   * @param errorMessage 错误消息
+   * @param error 错误对象
+   */
+  private async logScanError(startedAt: Date, durationMs: number, errorMessage: string, error: unknown): Promise<void> {
+    try {
+      const { pollingLogsRepository } = await import('@/lib/db/repositories/polling-logs');
+      const errorDetails = error instanceof Error ? error.stack : String(error);
+      
+      if (this.currentScanLogId) {
+        // 更新现有日志记录
+        await pollingLogsRepository.updateLog(this.currentScanLogId, {
+          status: 'error',
+          message: `扫描失败: ${errorMessage}`,
+          errorDetails,
+          durationMs,
+          commitsFound: 0,
+          commitsProcessed: 0,
+          completedAt: new Date(),
+        });
+        this.currentScanLogId = null;
+      } else {
+        // 如果没有现有记录，创建新记录（兜底逻辑）
+        await pollingLogsRepository.createLog({
+          repository: this.config.repository,
+          branch: this.config.branch,
+          scanType: 'scheduled',
+          status: 'error',
+          message: `扫描失败: ${errorMessage}`,
+          errorDetails,
+          durationMs,
+          commitsFound: 0,
+          commitsProcessed: 0,
+          startedAt,
+          completedAt: new Date(),
+        });
+      }
+    } catch (logError) {
+      this.scannerLogger.error('记录扫描失败日志失败', {
+        error: logError instanceof Error ? logError.message : String(logError),
+      });
+    }
   }
 }
 

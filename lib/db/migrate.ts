@@ -56,9 +56,9 @@ class DatabaseMigrator {
       const migrations = await db.query<MigrationRecord>(
         'SELECT filename FROM migrations ORDER BY id ASC'
       );
-      return migrations.map(m => m.filename);
+      return migrations?.map(m => m.filename) ?? [];
     } catch (error) {
-      // 如果迁移表不存在，返回空数组
+      // 迁移表不存在时返回空数组
       if (error instanceof Error && error.message.includes("doesn't exist")) {
         return [];
       }
@@ -74,12 +74,11 @@ class DatabaseMigrator {
     
     try {
       const files = await fs.readdir(this.migrationsDir);
-      const sqlFiles = files
-        .filter(file => file.endsWith('.sql'))
-        .sort(); // 按文件名排序确保执行顺序
+      const sqlFiles = (files ?? [])
+        .filter(file => file?.endsWith('.sql'))
+        .sort();
 
       const executedMigrations = await this.getExecutedMigrations();
-      
       const pendingFiles = sqlFiles.filter(file => !executedMigrations.includes(file));
       
       return pendingFiles.map(filename => ({
@@ -105,10 +104,24 @@ class DatabaseMigrator {
    * 分割 SQL 语句，过滤空语句和注释
    */
   private splitSqlStatements(sqlContent: string): string[] {
-    return sqlContent
+    // 移除注释行并重新组合
+    const cleanContent = sqlContent
+      .split('\n')
+      .filter(line => {
+        const trimmed = line.trim();
+        return trimmed.length > 0 && !trimmed.startsWith('--');
+      })
+      .join('\n');
+
+    // 按分号分割并过滤无效语句
+    return cleanContent
       .split(';')
       .map(stmt => stmt.trim())
-      .filter(stmt => stmt.length > 0 && !stmt.startsWith('--'));
+      .filter(stmt => {
+        if (!stmt) return false;
+        const lower = stmt.toLowerCase();
+        return !(lower.startsWith('/*') && lower.endsWith('*/'));
+      });
   }
 
   /**
@@ -173,7 +186,7 @@ class DatabaseMigrator {
 
       logger.info('发现待执行的迁移', { 
         count: pendingMigrations.length,
-        files: pendingMigrations.map(m => m.filename)
+        files: pendingMigrations.map(m => m?.filename).filter(Boolean)
       });
 
       pendingMigrations.sort((a, b) => a.version - b.version);

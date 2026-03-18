@@ -4,6 +4,7 @@ import { useState, useEffect } from 'react';
 import { Card } from '@/components/ui/Card';
 import { Alert } from '@/components/ui/Alert';
 import { LoadingSpinner } from '@/components/ui/LoadingSpinner';
+import { PollingStatus } from './PollingStatus';
 import { authApiClient } from '@/lib/utils/auth-api-client';
 
 /**
@@ -245,6 +246,9 @@ export function MonitoringDashboard() {
           </div>
         </div>
       </Card>
+      {/* 轮询状态监控 */}
+      <PollingStatus />
+
       {/* 系统概览 */}
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-5 gap-4">
         <div className="bg-white rounded-lg shadow-sm border p-6">

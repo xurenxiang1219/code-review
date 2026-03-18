@@ -14,6 +14,9 @@ export interface ReviewEntity {
   repository: string;
   author_name: string;
   author_email: string;
+  commit_message?: string;
+  commit_timestamp?: Date;
+  commit_url?: string;
   files_changed: number;
   lines_added: number;
   lines_deleted: number;

@@ -9,7 +9,7 @@ import { CommitInfo } from '@/types/git';
  * 队列键名常量
  */
 const QUEUE_KEYS = {
-  TASKS: 'review:queue:tasks',           // 有序集合：任务队列
+  TASKS: 'review:tasks',                 // 有序集合：任务队列
   TASK_DATA: 'review:task:',             // 哈希表：任务详情 (prefix)
   PROCESSING: 'review:processing',       // 集合：处理中的任务
   FAILED: 'review:failed',               // 集合：失败的任务
@@ -26,8 +26,6 @@ export const PRIORITY = {
   NORMAL: 500,       // 普通优先级
   LOW: 200,          // 低优先级
 } as const;
-
-type PriorityValue = typeof PRIORITY[keyof typeof PRIORITY];
 
 /**
  * 队列配置
@@ -91,6 +89,13 @@ export class ReviewQueue {
   }
 
   /**
+   * 提取错误信息的工具方法
+   */
+  private extractErrorMessage(error: unknown): string {
+    return error instanceof Error ? error.message : String(error);
+  }
+
+  /**
    * 添加审查任务到队列
    * 
    * @param commit - 提交信息
@@ -141,24 +146,36 @@ export class ReviewQueue {
       }
 
       // 使用事务确保原子性
+      const taskDataKey = `${QUEUE_KEYS.TASK_DATA}${taskId}`;
+      
+      // 构建任务数据，使用空值合并操作符确保数据安全
+      const taskData = {
+        id: taskId,
+        commitHash: commit.hash ?? '',
+        branch: commit.branch ?? '',
+        repository: commit.repository ?? '',
+        authorName: commit.author?.name ?? '',
+        authorEmail: commit.author?.email ?? '',
+        commitMessage: commit.message ?? '',
+        commitUrl: commit.url ?? '',
+        priority: priority.toString(),
+        retryCount: '0',
+        maxRetries: task.maxRetries.toString(),
+        status: 'queued',
+        createdAt: task.createdAt.toISOString(),
+        executeAt: new Date(executeAt).toISOString()
+      };
+
+      // 构建 hset 命令参数 - Redis 8.x 兼容性优化
+      const hsetArgs: (string | number)[] = [taskDataKey];
+      Object.entries(taskData).forEach(([key, value]) => {
+        hsetArgs.push(key, value);
+      });
+
+      // 使用 pipeline 确保原子性操作
       await RedisClient.pipeline([
         ['zadd', QUEUE_KEYS.TASKS, score, taskId],
-        ['hmset', `${QUEUE_KEYS.TASK_DATA}${taskId}`, 
-          'id', taskId,
-          'commitHash', commit.hash,
-          'branch', commit.branch,
-          'repository', commit.repository,
-          'authorName', commit.author.name,
-          'authorEmail', commit.author.email,
-          'commitMessage', commit.message,
-          'commitUrl', commit.url,
-          'priority', priority.toString(),
-          'retryCount', '0',
-          'maxRetries', task.maxRetries.toString(),
-          'status', 'queued',
-          'createdAt', task.createdAt.toISOString(),
-          'executeAt', new Date(executeAt).toISOString()
-        ],
+        ['hset', ...hsetArgs],
         ['hincrby', QUEUE_KEYS.STATS, 'total', 1],
         ['hset', QUEUE_KEYS.STATS, 'lastEnqueued', now.toString()],
       ]);
@@ -178,7 +195,7 @@ export class ReviewQueue {
       this.queueLogger.error('任务入队失败', {
         taskId,
         commitHash: commit.hash,
-        error: error instanceof Error ? error.message : String(error),
+        error: this.extractErrorMessage(error),
       });
       throw error;
     }
@@ -186,12 +203,12 @@ export class ReviewQueue {
 
   /**
    * 从队列中获取下一个任务
-   * 
-   * @returns 审查任务或 null
    */
   async dequeue(): Promise<ReviewTask | null> {
     try {
       const now = Date.now() / 1000; // Redis 分数使用秒
+      
+      this.queueLogger.debug('开始出队操作', { currentTime: now });
 
       // 获取可执行的任务（分数 <= 当前时间，按分数升序）
       const taskResults = await RedisUtils.sortedSetRangeByScore(
@@ -201,49 +218,95 @@ export class ReviewQueue {
         true // 包含分数
       );
 
+      this.queueLogger.debug('查询队列结果', { 
+        resultCount: taskResults.length,
+        results: taskResults.slice(0, 4) // 只显示前2个任务的信息
+      });
+
       if (taskResults.length === 0) {
+        this.queueLogger.debug('队列为空，返回 null');
         return null;
       }
 
       // 解析结果：[member1, score1, member2, score2, ...]
       const taskId = taskResults[0];
-      const score = parseFloat(taskResults[1]);
+      const taskDataKey = `${QUEUE_KEYS.TASK_DATA}${taskId}`;
+      
+      this.queueLogger.debug('尝试获取任务', { taskId, taskDataKey });
 
-      // 原子性地移除任务并添加到处理中集合
-      const pipelineResults = await RedisClient.pipeline([
-        ['zrem', QUEUE_KEYS.TASKS, taskId],
-        ['sadd', QUEUE_KEYS.PROCESSING, taskId],
-        ['hset', `${QUEUE_KEYS.TASK_DATA}${taskId}`, 'status', 'processing'],
-        ['hset', `${QUEUE_KEYS.TASK_DATA}${taskId}`, 'startedAt', new Date().toISOString()],
-        ['hincrby', QUEUE_KEYS.STATS, 'total', -1],
-        ['hincrby', QUEUE_KEYS.STATS, 'processing', 1],
-      ]);
-
-      // 检查是否成功移除（避免并发问题）
-      const removedCount = pipelineResults[0] as number;
-      if (removedCount === 0) {
-        // 任务已被其他进程处理
+      // 先检查任务数据是否存在
+      const taskData = await RedisUtils.hashGetAll(taskDataKey);
+      
+      if (!taskData?.id) {
+        // 任务数据不存在，清理无效的队列项
+        this.queueLogger.warn('发现无效任务，开始清理', { 
+          taskId,
+          reason: 'taskData?.id 检查失败'
+        });
+        await RedisClient.executeCommand('zrem', QUEUE_KEYS.TASKS, taskId);
+        this.queueLogger.warn('无效任务已清理，递归获取下一个任务', { taskId });
         return this.dequeue(); // 递归获取下一个任务
       }
 
-      // 获取任务详情
-      const taskData = await RedisUtils.hashGetAll(`${QUEUE_KEYS.TASK_DATA}${taskId}`);
-      if (!taskData.id) {
-        this.queueLogger.error('任务数据不存在', { taskId });
-        return null;
+      this.queueLogger.debug('任务数据验证通过', { 
+        taskId, 
+        commitHash: taskData.commitHash,
+        status: taskData.status 
+      });
+
+      // 原子性地移除任务并添加到处理中集合
+      const currentTime = new Date().toISOString();
+      
+      this.queueLogger.debug('执行原子性操作：移除任务并标记为处理中', { taskId });
+      
+      const pipelineCommands: [string, ...any[]][] = [
+        ['zrem', QUEUE_KEYS.TASKS, taskId],
+        ['sadd', QUEUE_KEYS.PROCESSING, taskId],
+        ['hset', taskDataKey, 'status', 'processing'],
+        ['hset', taskDataKey, 'startedAt', currentTime],
+        ['hincrby', QUEUE_KEYS.STATS, 'total', -1],
+        ['hincrby', QUEUE_KEYS.STATS, 'processing', 1],
+      ];
+      
+      this.queueLogger.debug('准备执行 pipeline 命令', { 
+        taskId, 
+        commandCount: pipelineCommands.length,
+        commands: pipelineCommands.map(cmd => cmd[0])
+      });
+      
+      const pipelineResults = await RedisClient.pipeline(pipelineCommands);
+      
+      this.queueLogger.debug('Pipeline 执行完成', { 
+        taskId, 
+        resultCount: pipelineResults.length,
+        removedFromQueue: pipelineResults[0]
+      });
+
+      // 检查是否成功移除（避免并发问题）
+      const removedCount = pipelineResults[0] as number;
+      this.queueLogger.debug('原子性操作结果', { 
+        taskId, 
+        removedCount
+      });
+      
+      if (removedCount === 0) {
+        // 任务已被其他进程处理
+        this.queueLogger.warn('任务已被其他进程处理，递归获取下一个任务', { taskId });
+        return this.dequeue(); // 递归获取下一个任务
       }
 
+      // 构建任务对象，使用默认值防止解析错误
       const task: ReviewTask = {
         id: taskData.id,
-        commitHash: taskData.commitHash,
-        branch: taskData.branch,
-        repository: taskData.repository,
-        priority: parseInt(taskData.priority),
-        retryCount: parseInt(taskData.retryCount),
-        maxRetries: parseInt(taskData.maxRetries),
+        commitHash: taskData.commitHash ?? '',
+        branch: taskData.branch ?? '',
+        repository: taskData.repository ?? '',
+        priority: parseInt(taskData.priority) || 0,
+        retryCount: parseInt(taskData.retryCount) || 0,
+        maxRetries: parseInt(taskData.maxRetries) || 0,
         status: 'processing' as TaskStatus,
         createdAt: new Date(taskData.createdAt),
-        startedAt: new Date(taskData.startedAt),
+        startedAt: new Date(currentTime),
       };
 
       this.queueLogger.info('任务已出队', {
@@ -258,7 +321,8 @@ export class ReviewQueue {
 
     } catch (error) {
       this.queueLogger.error('任务出队失败', {
-        error: error instanceof Error ? error.message : String(error),
+        error: this.extractErrorMessage(error),
+        stack: error instanceof Error ? error.stack : undefined,
       });
       throw error;
     }
@@ -287,22 +351,21 @@ export class ReviewQueue {
   async complete(taskId: string, result?: any): Promise<void> {
     try {
       const completedAt = new Date().toISOString();
+      const taskDataKey = `${QUEUE_KEYS.TASK_DATA}${taskId}`;
       
       await RedisClient.pipeline([
         ['srem', QUEUE_KEYS.PROCESSING, taskId],
         ['sadd', QUEUE_KEYS.COMPLETED, taskId],
-        ['hmset', `${QUEUE_KEYS.TASK_DATA}${taskId}`,
-          'status', 'completed',
-          'completedAt', completedAt,
-          'result', result ? JSON.stringify(result) : ''
-        ],
+        ['hset', taskDataKey, 'status', 'completed'],
+        ['hset', taskDataKey, 'completedAt', completedAt],
+        ['hset', taskDataKey, 'result', result ? JSON.stringify(result) : ''],
         ['hincrby', QUEUE_KEYS.STATS, 'processing', -1],
         ['hincrby', QUEUE_KEYS.STATS, 'completed', 1],
         ['hset', QUEUE_KEYS.STATS, 'lastCompleted', Date.now().toString()],
       ]);
 
       // 设置任务数据过期时间（保留 7 天）
-      await RedisUtils.expireCache(`${QUEUE_KEYS.TASK_DATA}${taskId}`, 7 * 24 * 3600);
+      await RedisUtils.expireCache(taskDataKey, 7 * 24 * 3600);
 
       this.queueLogger.info('任务已完成', {
         taskId,
@@ -313,7 +376,7 @@ export class ReviewQueue {
     } catch (error) {
       this.queueLogger.error('标记任务完成失败', {
         taskId,
-        error: error instanceof Error ? error.message : String(error),
+        error: this.extractErrorMessage(error),
       });
       throw error;
     }
@@ -321,39 +384,35 @@ export class ReviewQueue {
 
   /**
    * 标记任务失败
-   * 
-   * @param taskId - 任务 ID
-   * @param error - 错误信息
    */
   async fail(taskId: string, error: Error): Promise<void> {
     try {
-      // 获取当前任务信息
+      // 获取当前任务信息，使用空值安全检查
       const taskData = await RedisUtils.hashGetAll(`${QUEUE_KEYS.TASK_DATA}${taskId}`);
-      if (!taskData.id) {
+      if (!taskData?.id) {
         throw new Error(`任务不存在: ${taskId}`);
       }
 
-      const retryCount = parseInt(taskData.retryCount) + 1;
-      const maxRetries = parseInt(taskData.maxRetries);
+      const retryCount = (parseInt(taskData.retryCount) || 0) + 1;
+      const maxRetries = parseInt(taskData.maxRetries) || 0;
       const failedAt = new Date().toISOString();
 
       if (retryCount <= maxRetries) {
         // 重试：重新加入队列
-        const priority = parseInt(taskData.priority);
+        const priority = parseInt(taskData.priority) || 0;
         const retryDelay = this.calculateRetryDelay(retryCount);
         const executeAt = Date.now() + (retryDelay * 1000);
         const score = priority + (executeAt / 1000000);
 
+        const taskDataKey = `${QUEUE_KEYS.TASK_DATA}${taskId}`;
         await RedisClient.pipeline([
           ['srem', QUEUE_KEYS.PROCESSING, taskId],
           ['zadd', QUEUE_KEYS.TASKS, score, taskId],
-          ['hmset', `${QUEUE_KEYS.TASK_DATA}${taskId}`,
-            'status', 'queued',
-            'retryCount', retryCount.toString(),
-            'lastError', error.message,
-            'lastFailedAt', failedAt,
-            'executeAt', new Date(executeAt).toISOString()
-          ],
+          ['hset', taskDataKey, 'status', 'queued'],
+          ['hset', taskDataKey, 'retryCount', retryCount.toString()],
+          ['hset', taskDataKey, 'lastError', error.message ?? ''],
+          ['hset', taskDataKey, 'lastFailedAt', failedAt],
+          ['hset', taskDataKey, 'executeAt', new Date(executeAt).toISOString()],
           ['hincrby', QUEUE_KEYS.STATS, 'processing', -1],
           ['hincrby', QUEUE_KEYS.STATS, 'total', 1],
         ]);
@@ -368,22 +427,21 @@ export class ReviewQueue {
 
       } else {
         // 超过最大重试次数：标记为最终失败
+        const taskDataKey = `${QUEUE_KEYS.TASK_DATA}${taskId}`;
         await RedisClient.pipeline([
           ['srem', QUEUE_KEYS.PROCESSING, taskId],
           ['sadd', QUEUE_KEYS.FAILED, taskId],
-          ['hmset', `${QUEUE_KEYS.TASK_DATA}${taskId}`,
-            'status', 'failed',
-            'retryCount', retryCount.toString(),
-            'finalError', error.message,
-            'failedAt', failedAt
-          ],
+          ['hset', taskDataKey, 'status', 'failed'],
+          ['hset', taskDataKey, 'retryCount', retryCount.toString()],
+          ['hset', taskDataKey, 'finalError', error.message ?? ''],
+          ['hset', taskDataKey, 'failedAt', failedAt],
           ['hincrby', QUEUE_KEYS.STATS, 'processing', -1],
           ['hincrby', QUEUE_KEYS.STATS, 'failed', 1],
           ['hset', QUEUE_KEYS.STATS, 'lastFailed', Date.now().toString()],
         ]);
 
         // 设置失败任务数据过期时间（保留 30 天用于分析）
-        await RedisUtils.expireCache(`${QUEUE_KEYS.TASK_DATA}${taskId}`, 30 * 24 * 3600);
+        await RedisUtils.expireCache(taskDataKey, 30 * 24 * 3600);
 
         this.queueLogger.error('任务最终失败', {
           taskId,
@@ -398,7 +456,7 @@ export class ReviewQueue {
       this.queueLogger.error('标记任务失败时出错', {
         taskId,
         originalError: error.message,
-        processingError: err instanceof Error ? err.message : String(err),
+        processingError: this.extractErrorMessage(err),
       });
       throw err;
     }
@@ -428,14 +486,11 @@ export class ReviewQueue {
 
   /**
    * 获取任务详情
-   * 
-   * @param taskId - 任务 ID
-   * @returns 任务详情或 null
    */
   async getTask(taskId: string): Promise<ReviewTask | null> {
     try {
       const taskData = await RedisUtils.hashGetAll(`${QUEUE_KEYS.TASK_DATA}${taskId}`);
-      if (!taskData.id) {
+      if (!taskData?.id) {
         return null;
       }
 
@@ -444,11 +499,15 @@ export class ReviewQueue {
         commitHash: taskData.commitHash,
         branch: taskData.branch,
         repository: taskData.repository,
+        authorName: taskData.authorName ?? undefined,
+        authorEmail: taskData.authorEmail ?? undefined,
+        commitMessage: taskData.commitMessage ?? undefined,
+        commitUrl: taskData.commitUrl ?? undefined,
         priority: parseInt(taskData.priority),
         retryCount: parseInt(taskData.retryCount),
         maxRetries: parseInt(taskData.maxRetries),
         status: taskData.status as TaskStatus,
-        errorMessage: taskData.finalError || taskData.lastError,
+        errorMessage: taskData.finalError ?? taskData.lastError,
         createdAt: new Date(taskData.createdAt),
         startedAt: taskData.startedAt ? new Date(taskData.startedAt) : undefined,
         completedAt: taskData.completedAt ? new Date(taskData.completedAt) : undefined,
@@ -524,33 +583,29 @@ export class ReviewQueue {
 
   /**
    * 计算任务优先级
-   * 
-   * @param commit - 提交信息
-   * @returns 优先级分数
    */
   private calculatePriority(commit: CommitInfo): number {
     const message = commit.message.toLowerCase();
     
-    if (message.includes('critical') || message.includes('urgent') || message.includes('hotfix')) {
+    // 关键任务关键词
+    const criticalKeywords = ['critical', 'urgent', 'hotfix', 'security', 'vulnerability'];
+    if (criticalKeywords.some(keyword => message.includes(keyword))) {
       return PRIORITY.CRITICAL;
     }
     
-    if (message.includes('security') || message.includes('vulnerability')) {
-      return PRIORITY.CRITICAL;
-    }
-    
-    if (message.includes('bug') || message.includes('fix')) {
+    // 高优先级关键词
+    const highKeywords = ['bug', 'fix'];
+    if (highKeywords.some(keyword => message.includes(keyword))) {
       return PRIORITY.HIGH;
     }
     
-    if (message.includes('feature') || message.includes('enhancement')) {
-      return PRIORITY.NORMAL;
-    }
-    
-    if (message.includes('refactor') || message.includes('cleanup')) {
+    // 低优先级关键词
+    const lowKeywords = ['refactor', 'cleanup'];
+    if (lowKeywords.some(keyword => message.includes(keyword))) {
       return PRIORITY.LOW;
     }
-
+    
+    // 普通优先级关键词和默认值
     return PRIORITY.NORMAL;
   }
 

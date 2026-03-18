@@ -116,6 +116,13 @@ export class QueueWorker extends EventEmitter {
   }
 
   /**
+   * 提取错误信息的工具方法
+   */
+  private extractErrorMessage(error: unknown): string {
+    return error instanceof Error ? error.message : String(error);
+  }
+
+  /**
    * 启动 Worker
    */
   async start(): Promise<void> {
@@ -331,10 +338,11 @@ export class QueueWorker extends EventEmitter {
       return;
     }
 
-    this.workerLogger.debug('获取到待处理任务', {
+    this.workerLogger.info('获取到待处理任务', {
       taskCount: tasks.length,
       activeTasks: this.activeTasks.size,
       availableSlots,
+      taskIds: tasks.map(t => t.id.substring(0, 8)),
     });
 
     // 并发处理任务
@@ -364,7 +372,18 @@ export class QueueWorker extends EventEmitter {
     }, this.config.taskTimeout);
 
     // 创建任务处理 Promise
-    const taskPromise = this.executeTask(task);
+    let taskPromise: Promise<any>;
+    
+    try {
+      taskPromise = this.executeTask(task);
+    } catch (error) {
+      this.workerLogger.error('创建任务处理 Promise 失败', {
+        taskId,
+        error: this.extractErrorMessage(error),
+      });
+      clearTimeout(timeoutId);
+      throw error;
+    }
 
     // 记录活跃任务
     const activeTask: ActiveTask = {
@@ -403,6 +422,13 @@ export class QueueWorker extends EventEmitter {
       this.emit('taskCompleted', task, result);
 
     } catch (error) {
+      this.workerLogger.error('任务处理过程中出错', {
+        taskId,
+        commitHash: task.commitHash,
+        error: this.extractErrorMessage(error),
+        stack: error instanceof Error ? error.stack : undefined,
+      });
+      
       // 清理超时定时器
       clearTimeout(timeoutId);
       
@@ -411,7 +437,16 @@ export class QueueWorker extends EventEmitter {
       
       // 标记任务失败
       const taskError = error instanceof Error ? error : new Error(String(error));
-      await this.queue.fail(taskId, taskError);
+      
+      try {
+        await this.queue.fail(taskId, taskError);
+      } catch (failError) {
+        this.workerLogger.error('标记任务失败时出错', {
+          taskId,
+          originalError: taskError.message,
+          failError: this.extractErrorMessage(failError),
+        });
+      }
       
       // 更新统计信息
       const processingTime = Date.now() - startTime;
@@ -438,7 +473,7 @@ export class QueueWorker extends EventEmitter {
     } catch (error) {
       // 包装错误以提供更多上下文
       const wrappedError = new Error(
-        `任务处理器执行失败: ${error instanceof Error ? error.message : String(error)}`
+        `任务处理器执行失败: ${this.extractErrorMessage(error)}`
       );
       
       if (error instanceof Error && error.stack) {
@@ -580,7 +615,7 @@ export class QueueWorker extends EventEmitter {
    * 处理错误
    */
   private handleError(message: string, error: any): void {
-    const errorMessage = error instanceof Error ? error.message : String(error);
+    const errorMessage = this.extractErrorMessage(error);
     
     this.stats.lastError = errorMessage;
     this.stats.lastErrorAt = new Date();

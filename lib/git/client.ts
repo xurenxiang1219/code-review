@@ -25,6 +25,11 @@ interface GitCommitResponse {
     };
   };
   html_url: string;
+  stats?: {
+    additions: number;
+    deletions: number;
+    total: number;
+  };
   files?: Array<{
     filename: string;
     previous_filename?: string;
@@ -130,47 +135,196 @@ export class GitClient {
         const url = `${this.config.baseUrl}/repos/${normalizedRepo}/commits/${commitHash}`;
         const response = await this.makeRequest<GitCommitResponse>(url);
 
+        // 处理无文件信息的情况
         if (!response.files) {
-          this.clientLogger.warn('No files in commit diff', { commitHash });
-          return {
-            commitHash,
-            files: [],
-            totalAdditions: 0,
-            totalDeletions: 0,
-            totalFiles: 0,
-          };
+          return await this.handleMissingFiles(response, commitHash, repository, normalizedRepo);
         }
 
-        const files: FileChange[] = response.files.map(file => ({
-          path: file.filename,
-          previousPath: file.previous_filename,
-          type: this.mapFileStatus(file.status),
-          language: this.detectLanguage(file.filename),
-          additions: file.additions,
-          deletions: file.deletions,
-          patch: file.patch || '',
-        }));
+        // 检查空文件数组的情况
+        if (Array.isArray(response.files) && response.files.length === 0 && response.stats) {
+          this.clientLogger.warn('提交可能因为过大而被 GitHub API 截断', {
+            commitHash,
+            stats: response.stats
+          });
+        }
 
-        const diffInfo: DiffInfo = {
-          commitHash,
-          files,
-          totalAdditions: files.reduce((sum, file) => sum + file.additions, 0),
-          totalDeletions: files.reduce((sum, file) => sum + file.deletions, 0),
-          totalFiles: files.length,
-        };
-
-        this.clientLogger.debug('Diff fetched successfully', {
-          commitHash,
-          filesCount: diffInfo.totalFiles,
-          additions: diffInfo.totalAdditions,
-          deletions: diffInfo.totalDeletions,
-        });
-
-        return diffInfo;
+        return this.buildDiffInfoFromFiles(response.files, commitHash);
       },
       GIT_RETRY_OPTIONS,
       `getDiff(${commitHash})`
     );
+  }
+
+  /**
+   * 处理 GitHub API 未返回文件信息的情况
+   * @param response GitHub API 响应
+   * @param commitHash 提交哈希
+   * @param repository 原始仓库名
+   * @param normalizedRepo 标准化仓库名
+   * @returns 差异信息
+   */
+  private async handleMissingFiles(
+    response: GitCommitResponse, 
+    commitHash: string, 
+    repository: string, 
+    normalizedRepo: string
+  ): Promise<DiffInfo> {
+    this.clientLogger.warn('GitHub API 未返回文件变更信息，尝试使用 Compare API', { 
+      commitHash, 
+      repository: normalizedRepo,
+      responseKeys: Object.keys(response),
+      hasStats: !!response.stats
+    });
+    
+    // 尝试使用 Compare API 作为备用方案
+    const compareResult = await this.getDiffUsingCompareAPI(commitHash, repository);
+    if (compareResult.totalFiles > 0) {
+      this.clientLogger.info('Compare API 成功获取到文件变更信息', {
+        commitHash,
+        filesCount: compareResult.totalFiles,
+        additions: compareResult.totalAdditions,
+        deletions: compareResult.totalDeletions,
+      });
+      return compareResult;
+    }
+    
+    // 尝试从 stats 字段获取统计信息
+    const statsInfo = this.extractStatsFromResponse(response);
+    
+    return {
+      commitHash,
+      files: [],
+      totalAdditions: statsInfo.additions,
+      totalDeletions: statsInfo.deletions,
+      totalFiles: statsInfo.total,
+    };
+  }
+
+  /**
+   * 从文件数组构建差异信息
+   * @param files 文件变更数组
+   * @param commitHash 提交哈希
+   * @returns 差异信息
+   */
+  private buildDiffInfoFromFiles(files: GitCommitResponse['files'], commitHash: string): DiffInfo {
+    const fileChanges: FileChange[] = (files ?? []).map(file => ({
+      path: file.filename,
+      previousPath: file.previous_filename,
+      type: this.mapFileStatus(file.status),
+      language: this.detectLanguage(file.filename),
+      additions: file.additions ?? 0,
+      deletions: file.deletions ?? 0,
+      patch: file.patch ?? '',
+    }));
+
+    const diffInfo: DiffInfo = {
+      commitHash,
+      files: fileChanges,
+      totalAdditions: fileChanges.reduce((sum, file) => sum + file.additions, 0),
+      totalDeletions: fileChanges.reduce((sum, file) => sum + file.deletions, 0),
+      totalFiles: fileChanges.length,
+    };
+
+    this.clientLogger.debug('Diff fetched successfully', {
+      commitHash,
+      filesCount: diffInfo.totalFiles,
+      additions: diffInfo.totalAdditions,
+      deletions: diffInfo.totalDeletions,
+    });
+
+    return diffInfo;
+  }
+
+  /**
+   * 使用 Compare API 获取提交差异（备用方案）
+   * @param commitHash 提交哈希
+   * @param repository 仓库名
+   * @returns 差异信息
+   */
+  private async getDiffUsingCompareAPI(commitHash: string, repository: string): Promise<DiffInfo> {
+    const normalizedRepo = this.normalizeRepository(repository);
+    
+    try {
+      const url = `${this.config.baseUrl}/repos/${normalizedRepo}/compare/${commitHash}^...${commitHash}`;
+      const response = await this.makeRequest<any>(url);
+      
+      this.clientLogger.debug('使用 Compare API 获取 diff', {
+        commitHash,
+        filesCount: response.files?.length ?? 0,
+      });
+      
+      if (!response.files) {
+        return this.createEmptyDiffInfo(commitHash);
+      }
+      
+      return this.buildDiffInfoFromCompareResponse(response, commitHash);
+    } catch (error) {
+      this.clientLogger.error('Compare API 调用失败', {
+        commitHash,
+        error: error instanceof Error ? error.message : String(error),
+      });
+      
+      return this.createEmptyDiffInfo(commitHash);
+    }
+  }
+
+  /**
+   * 创建空的差异信息
+   * @param commitHash 提交哈希
+   * @returns 空的差异信息
+   */
+  private createEmptyDiffInfo(commitHash: string): DiffInfo {
+    return {
+      commitHash,
+      files: [],
+      totalAdditions: 0,
+      totalDeletions: 0,
+      totalFiles: 0,
+    };
+  }
+
+  /**
+   * 从 Compare API 响应构建差异信息
+   * @param response Compare API 响应
+   * @param commitHash 提交哈希
+   * @returns 差异信息
+   */
+  private buildDiffInfoFromCompareResponse(response: any, commitHash: string): DiffInfo {
+    const files: FileChange[] = response.files.map((file: any) => ({
+      path: file.filename,
+      previousPath: file.previous_filename,
+      type: this.mapFileStatus(file.status),
+      language: this.detectLanguage(file.filename),
+      additions: file.additions ?? 0,
+      deletions: file.deletions ?? 0,
+      patch: file.patch ?? '',
+    }));
+    
+    return {
+      commitHash,
+      files,
+      totalAdditions: files.reduce((sum, file) => sum + file.additions, 0),
+      totalDeletions: files.reduce((sum, file) => sum + file.deletions, 0),
+      totalFiles: files.length,
+    };
+  }
+
+  /**
+   * 从 GitHub API 响应中提取统计信息
+   * @param response GitHub API 响应
+   * @returns 统计信息
+   */
+  private extractStatsFromResponse(response: any): { additions: number; deletions: number; total: number } {
+    // GitHub API 可能在 stats 字段中包含统计信息
+    if (response.stats) {
+      return {
+        additions: response.stats.additions ?? 0,
+        deletions: response.stats.deletions ?? 0,
+        total: response.stats.total ?? 0,
+      };
+    }
+    
+    return { additions: 0, deletions: 0, total: 0 };
   }
 
   /**

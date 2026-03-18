@@ -77,8 +77,14 @@ export class PollingScanner {
   }
 
   /**
+   * 提取错误信息的工具方法
+   */
+  private extractErrorMessage(error: unknown): string {
+    return error instanceof Error ? error.message : String(error);
+  }
+
+  /**
    * 启动轮询扫描
-   * @param interval - 扫描间隔（秒），如果不提供则使用配置中的值
    */
   start(interval?: number): void {
     if (this.timerId) {
@@ -106,7 +112,7 @@ export class PollingScanner {
     // 立即执行一次扫描
     this.scan().catch(error => {
       this.scannerLogger.error('初始扫描失败', {
-        error: error instanceof Error ? error.message : String(error),
+        error: this.extractErrorMessage(error),
       });
     });
 
@@ -114,7 +120,7 @@ export class PollingScanner {
     this.timerId = setInterval(() => {
       this.scan().catch(error => {
         this.scannerLogger.error('定时扫描失败', {
-          error: error instanceof Error ? error.message : String(error),
+          error: this.extractErrorMessage(error),
         });
       });
     }, scanInterval * 1000);
@@ -142,7 +148,6 @@ export class PollingScanner {
 
   /**
    * 执行一次扫描
-   * @returns 扫描结果
    */
   async scan(): Promise<ScanResult> {
     if (this.isScanning) {
@@ -247,7 +252,7 @@ export class PollingScanner {
           result.errors++;
           this.scannerLogger.error('处理提交失败', {
             commitHash: commit.hash,
-            error: error instanceof Error ? error.message : String(error),
+            error: this.extractErrorMessage(error),
           });
           // 继续处理其他提交
         }
@@ -272,7 +277,7 @@ export class PollingScanner {
 
     } catch (error) {
       const duration = Date.now() - scanStartTime;
-      const errorMessage = error instanceof Error ? error.message : String(error);
+      const errorMessage = this.extractErrorMessage(error);
       
       this.scannerLogger.error('扫描失败', {
         scanNumber: this.scanCount,
@@ -296,8 +301,6 @@ export class PollingScanner {
 
   /**
    * 检查提交是否已处理
-   * @param commitHash - 提交哈希
-   * @returns 是否已处理
    */
   async isProcessed(commitHash: string): Promise<boolean> {
     try {
@@ -305,7 +308,7 @@ export class PollingScanner {
     } catch (error) {
       this.scannerLogger.error('检查提交状态失败', {
         commitHash,
-        error: error instanceof Error ? error.message : String(error),
+        error: this.extractErrorMessage(error),
       });
       // 发生错误时，保守地返回 false，允许重新处理
       return false;
@@ -334,7 +337,6 @@ export class PollingScanner {
 
   /**
    * 更新配置
-   * @param config - 新的配置（部分更新）
    */
   updateConfig(config: Partial<PollingScannerConfig>): void {
     const oldConfig = { ...this.config };
@@ -369,7 +371,6 @@ export class PollingScanner {
 
   /**
    * 计算起始时间（用于获取提交列表）
-   * @returns 起始时间
    */
   private async calculateSinceTime(): Promise<Date> {
     const DAYS_7_IN_MS = 7 * 24 * 60 * 60 * 1000;
@@ -393,7 +394,7 @@ export class PollingScanner {
       return this.createDefaultSinceTime(DAYS_7_IN_MS);
     } catch (error) {
       this.scannerLogger.warn('获取上次扫描时间失败，使用默认时间范围', {
-        error: error instanceof Error ? error.message : String(error),
+        error: this.extractErrorMessage(error),
       });
       
       return this.createDefaultSinceTime(DAYS_7_IN_MS);
@@ -402,8 +403,6 @@ export class PollingScanner {
 
   /**
    * 创建默认的起始时间
-   * @param daysInMs 天数对应的毫秒数
-   * @returns 默认起始时间
    */
   private createDefaultSinceTime(daysInMs: number): Date {
     const defaultSince = new Date(Date.now() - daysInMs);
@@ -450,7 +449,7 @@ export class PollingScanner {
       this.currentScanLogId = log?.id ?? null;
     } catch (error) {
       this.scannerLogger.error('记录扫描开始日志失败', {
-        error: error instanceof Error ? error.message : String(error),
+        error: this.extractErrorMessage(error),
       });
     }
   }
@@ -493,7 +492,7 @@ export class PollingScanner {
       }
     } catch (error) {
       this.scannerLogger.error('记录扫描成功日志失败', {
-        error: error instanceof Error ? error.message : String(error),
+        error: this.extractErrorMessage(error),
       });
     }
   }
@@ -540,7 +539,7 @@ export class PollingScanner {
       }
     } catch (logError) {
       this.scannerLogger.error('记录扫描失败日志失败', {
-        error: logError instanceof Error ? logError.message : String(logError),
+        error: this.extractErrorMessage(logError),
       });
     }
   }

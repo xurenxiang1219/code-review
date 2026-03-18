@@ -3,7 +3,6 @@ import { notFound } from 'next/navigation';
 import { ReviewDetail } from '@/components/review/ReviewDetail';
 import type { ReviewEntity } from '@/lib/db/repositories/review';
 import type { ReviewCommentRecord } from '@/types/review';
-import type { ApiResponse } from '@/types/api';
 
 /**
  * 审查详情页面参数
@@ -23,32 +22,88 @@ interface ReviewDetailData {
 }
 
 /**
- * 获取审查详情数据
+ * 获取审查详情数据（服务端直接调用数据库）
  * 
  * @param reviewId - 审查记录ID
- * @returns 审查详情数据
+ * @returns 审查详情数据或 null（如果不存在）
+ */
+/**
+ * 补全审查记录的Git提交信息
+ *
+ * @param review - 审查记录
+ * @param reviewId - 审查记录ID
+ * @returns 更新后的审查记录
+ */
+async function enrichReviewWithCommitInfo(review: ReviewEntity, reviewId: string): Promise<ReviewEntity> {
+  // 如果已有完整提交信息，直接返回
+  if (review.commit_message && review.commit_timestamp) {
+    return review;
+  }
+
+  try {
+    const { createDefaultGitClient } = await import('@/lib/git/client');
+    const { db } = await import('@/lib/db/client');
+
+    const gitClient = createDefaultGitClient();
+    const commitInfo = await gitClient.getCommit(review.commit_hash, review.repository);
+
+    // 更新数据库中的提交信息
+    await db.execute(
+      `UPDATE reviews SET
+       commit_message = ?,
+       commit_timestamp = ?,
+       commit_url = ?,
+       updated_at = NOW()
+       WHERE id = ?`,
+      [commitInfo.message, commitInfo.timestamp, commitInfo.url, reviewId]
+    );
+
+    // 返回更新后的review对象
+    return {
+      ...review,
+      commit_message: commitInfo.message,
+      commit_timestamp: commitInfo.timestamp,
+      commit_url: commitInfo.url,
+    };
+  } catch (gitError) {
+    console.warn('获取Git提交信息失败:', gitError);
+    return review; // 返回原始review，不影响主要功能
+  }
+}
+
+/**
+ * 获取审查详情数据（服务端直接调用数据库）
+ *
+ * @param reviewId - 审查记录ID
+ * @returns 审查详情数据或 null（如果不存在）
  */
 async function getReviewDetail(reviewId: string): Promise<ReviewDetailData | null> {
   try {
-    const baseUrl = process.env.NEXT_PUBLIC_API_BASE_URL || 'http://localhost:3000';
-    const response = await fetch(`${baseUrl}/api/reviews/${reviewId}`, {
-      cache: 'no-store', // 确保获取最新数据
-    });
+    const { reviewRepository } = await import('@/lib/db/repositories/review');
+    const { db } = await import('@/lib/db/client');
 
-    if (!response.ok) {
-      if (response.status === 404) {
-        return null;
-      }
-      throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+    // 查询审查记录
+    const originalReview = await reviewRepository.getReviewById(reviewId);
+    if (!originalReview) {
+      return null;
     }
 
-    const data: ApiResponse<ReviewDetailData> = await response.json();
-    
-    if (data.code !== 0) {
-      throw new Error(data.msg || '获取审查详情失败');
-    }
+    // 补全提交信息
+    const review = await enrichReviewWithCommitInfo(originalReview, reviewId);
 
-    return data.data;
+    // 查询审查评论
+    await db.initialize();
+    const comments = await db.query(
+      `SELECT * FROM review_comments
+       WHERE review_id = ?
+       ORDER BY severity DESC, file_path ASC, line_number ASC`,
+      [reviewId]
+    );
+
+    return {
+      review,
+      comments: Array.isArray(comments) ? comments : [],
+    };
   } catch (error) {
     console.error('获取审查详情失败:', error);
     throw error;
@@ -143,7 +198,7 @@ export default async function ReviewDetailPage({ params }: ReviewDetailPageProps
               审查详情
             </h1>
             <p className="mt-2 text-gray-600">
-              提交 {reviewData.review.commit_hash.substring(0, 8)} 的详细审查结果
+              提交 {reviewData.review.commit_hash?.substring(0, 8) ?? '未知'} 的详细审查结果
             </p>
           </div>
 
@@ -200,14 +255,14 @@ export async function generateMetadata({ params }: ReviewDetailPageProps) {
     }
 
     const { review } = reviewData;
-    const commitShort = review.commit_hash.substring(0, 8);
+    const commitShort = review.commit_hash?.substring(0, 8) ?? '未知';
     
     return {
       title: `审查详情 ${commitShort} - CodeReview`,
-      description: `查看提交 ${commitShort} 在 ${review.branch} 分支的详细审查结果，包含 ${review.total_issues} 个问题`,
+      description: `查看提交 ${commitShort} 在 ${review.branch ?? '未知分支'} 分支的详细审查结果，包含 ${review.total_issues ?? 0} 个问题`,
       openGraph: {
         title: `审查详情 ${commitShort}`,
-        description: `${review.repository} 仓库 ${review.branch} 分支的代码审查结果`,
+        description: `${review.repository ?? '未知仓库'} 仓库 ${review.branch ?? '未知分支'} 分支的代码审查结果`,
         type: 'website',
       },
     };

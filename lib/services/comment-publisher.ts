@@ -82,7 +82,8 @@ export class CommentPublisher {
    */
   async publish(
     review: ReviewResult,
-    commit: CommitInfo
+    commit: CommitInfo,
+    notificationConfig?: { gitComment?: { enabled: boolean; summaryOnly?: boolean } }
   ): Promise<PublishResult> {
     const publishId = uuidv4();
     
@@ -92,6 +93,7 @@ export class CommentPublisher {
       commitHash: commit.hash,
       commentsCount: review.comments.length,
       repository: commit.repository,
+      gitCommentEnabled: notificationConfig?.gitComment?.enabled ?? true,
     });
 
     const result: PublishResult = {
@@ -104,8 +106,28 @@ export class CommentPublisher {
     };
 
     try {
-      // 1. 发布行内评论
-      if (review.comments.length > 0) {
+      // 1. 保存评论到数据库
+      if (Array.isArray(review.comments) && review.comments.length > 0) {
+        await this.saveCommentsToDatabase(review.id, review.comments);
+      }
+
+      // 检查是否启用了 Git 评论通知
+      const gitCommentEnabled = notificationConfig?.gitComment?.enabled ?? true;
+      const summaryOnly = notificationConfig?.gitComment?.summaryOnly ?? false;
+
+      if (!gitCommentEnabled) {
+        this.publishLogger.info('Git 评论通知已禁用，跳过评论发布', {
+          publishId,
+          commitHash: commit.hash,
+        });
+        
+        // 即使不发布评论，也标记为成功（因为用户主动禁用）
+        result.success = true;
+        return result;
+      }
+
+      // 2. 发布行内评论到Git（如果不是仅摘要模式）
+      if (!summaryOnly && Array.isArray(review.comments) && review.comments.length > 0) {
         const commentResults = await this.publishAllComments(
           review.comments,
           commit,
@@ -115,9 +137,22 @@ export class CommentPublisher {
         result.publishedComments = commentResults.published;
         result.failedComments = commentResults.failed;
         result.errors.push(...commentResults.errors);
+
+        // 更新数据库中评论的发布状态
+        if (commentResults.publishedComments?.length > 0) {
+          await this.updateCommentsPublishStatus(
+            review.id, 
+            commentResults.publishedComments
+          );
+        }
+      } else if (summaryOnly) {
+        this.publishLogger.info('仅摘要模式，跳过行内评论发布', {
+          publishId,
+          commitHash: commit.hash,
+        });
       }
 
-      // 2. 发布摘要评论
+      // 3. 发布摘要评论
       try {
         await this.publishSummary(review.summary, commit);
         result.summaryPublished = true;
@@ -137,7 +172,7 @@ export class CommentPublisher {
         });
       }
 
-      // 3. 判断是否需要使用备用方案
+      // 4. 判断是否需要使用备用方案
       const hasFailures = result.failedComments > 0 || !result.summaryPublished;
       
       if (hasFailures && this.emailConfig.enabled) {
@@ -151,7 +186,7 @@ export class CommentPublisher {
         result.fallbackUsed = true;
       }
 
-      // 4. 确定整体成功状态
+      // 5. 确定整体成功状态
       result.success = result.summaryPublished || result.publishedComments > 0;
 
       this.publishLogger.info('Review publication completed', {
@@ -278,11 +313,17 @@ export class CommentPublisher {
     comments: ReviewComment[],
     commit: CommitInfo,
     publishId: string
-  ): Promise<{ published: number; failed: number; errors: string[] }> {
+  ): Promise<{ 
+    published: number; 
+    failed: number; 
+    errors: string[];
+    publishedComments: Array<{ file: string; line: number; commentId?: string }>;
+  }> {
     const result = {
       published: 0,
       failed: 0,
       errors: [] as string[],
+      publishedComments: [] as Array<{ file: string; line: number; commentId?: string }>,
     };
 
     this.publishLogger.info('Publishing all comments', {
@@ -301,6 +342,11 @@ export class CommentPublisher {
           
           if (publishResult.success) {
             result.published++;
+            result.publishedComments.push({
+              file: comment.file,
+              line: comment.line,
+              commentId: publishResult.commentId,
+            });
           } else {
             result.failed++;
             result.errors.push(
@@ -661,6 +707,111 @@ export class CommentPublisher {
       return false;
     }
   }
+
+    /**
+     * 保存评论到数据库
+     *
+     * @param reviewId - 审查记录ID
+     * @param comments - 评论列表
+     */
+    /**
+       * 保存评论到数据库
+       * 
+       * @param reviewId - 审查记录ID
+       * @param comments - 评论列表
+       */
+      private async saveCommentsToDatabase(reviewId: string, comments: ReviewComment[]): Promise<void> {
+        if (!Array.isArray(comments) || comments.length === 0) {
+          return;
+        }
+
+        const { db } = await import('@/lib/db/client');
+        const { v4: uuidv4 } = await import('uuid');
+
+        try {
+          await db.initialize();
+
+          for (const comment of comments) {
+            const commentId = uuidv4();
+            await db.execute(
+              `INSERT INTO review_comments (
+                id, review_id, file_path, line_number, severity, category,
+                message, suggestion, code_snippet, published, created_at
+              ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NOW())`,
+              [
+                commentId,
+                reviewId,
+                comment.file,
+                comment.line,
+                comment.severity,
+                comment.category,
+                comment.message,
+                comment.suggestion ?? null,
+                comment.codeSnippet ?? null,
+                false,
+              ]
+            );
+          }
+
+          this.publishLogger.info('Comments saved to database', {
+            reviewId,
+            commentsCount: comments.length,
+          });
+        } catch (error) {
+          this.publishLogger.error('Failed to save comments to database', {
+            reviewId,
+            error: error instanceof Error ? error.message : String(error),
+          });
+          throw error;
+        }
+      }
+
+    /**
+     * 更新评论的发布状态
+     *
+     * @param reviewId - 审查记录ID
+     * @param publishedComments - 成功发布的评论信息
+     */
+    /**
+       * 更新评论的发布状态
+       * 
+       * @param reviewId - 审查记录ID
+       * @param publishedComments - 成功发布的评论信息
+       */
+      private async updateCommentsPublishStatus(
+        reviewId: string, 
+        publishedComments: Array<{ file: string; line: number; commentId?: string }>
+      ): Promise<void> {
+        if (!Array.isArray(publishedComments) || publishedComments.length === 0) {
+          return;
+        }
+
+        const { db } = await import('@/lib/db/client');
+
+        try {
+          await db.initialize();
+
+          for (const comment of publishedComments) {
+            await db.execute(
+              `UPDATE review_comments SET 
+               published = TRUE, 
+               published_at = NOW() 
+               WHERE review_id = ? AND file_path = ? AND line_number = ?`,
+              [reviewId, comment.file, comment.line]
+            );
+          }
+
+          this.publishLogger.debug('Comments publish status updated', {
+            reviewId,
+            updatedCount: publishedComments.length,
+          });
+        } catch (error) {
+          this.publishLogger.error('Failed to update comments publish status', {
+            reviewId,
+            error: error instanceof Error ? error.message : String(error),
+          });
+        }
+      }
 }
 
 /**

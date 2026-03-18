@@ -1,10 +1,9 @@
 #!/usr/bin/env tsx
 
+import dotenv from 'dotenv';
 import { QueueWorker, createWorker } from '@/lib/queue/worker';
 import { createCodeAnalyzer } from '@/lib/services/code-analyzer';
-import { createAIReviewer } from '@/lib/services/ai-reviewer';
 import { createCommentPublisher } from '@/lib/services/comment-publisher';
-import { createGitClient } from '@/lib/git/client';
 import { createDiffParser } from '@/lib/git/diff-parser';
 import { logger } from '@/lib/utils/logger';
 import { ReviewTask } from '@/types/review';
@@ -12,7 +11,10 @@ import { CommitInfo } from '@/types/git';
 import RedisClient from '@/lib/cache/redis-client';
 import { reviewRepository } from '@/lib/db/repositories/review';
 import { configRepository } from '@/lib/db/repositories/config';
-import { v4 as uuidv4 } from 'uuid';
+import { commitTrackerRepository } from '@/lib/db/repositories/commit-tracker';
+
+// 加载环境变量
+dotenv.config();
 
 /**
  * Worker 进程配置
@@ -95,10 +97,9 @@ class WorkerProcess {
    * 提取错误信息的工具方法
    */
   private extractErrorInfo(error: unknown): { message: string; stack?: string } {
-    if (error instanceof Error) {
-      return { message: error.message, stack: error.stack };
-    }
-    return { message: String(error) };
+    return error instanceof Error 
+      ? { message: error.message, stack: error.stack }
+      : { message: String(error) };
   }
 
   /**
@@ -166,9 +167,6 @@ class WorkerProcess {
   }
 
   /**
-   * 创建任务处理器
-   */
-  /**
    * 日志图标常量
    */
   private static readonly LOG_ICONS = {
@@ -179,27 +177,59 @@ class WorkerProcess {
 
   /**
    * 创建模拟的 AI 审查结果（临时方法，等待真实 AI 客户端接入）
-   * @returns 模拟的审查结果
    */
   private createMockReviewResult() {
-    return {
-      id: `review_${Date.now()}_${Math.random().toString(36).substring(2, 11)}`,
-      summary: {
-        total: 0,
-        critical: 0,
-        major: 0,
-        minor: 0,
-        suggestion: 0,
-      },
-      processingTimeMs: 100,
-      comments: [],
-    };
-  }
+      const { v4: uuidv4 } = require('uuid');
+
+      return {
+        id: `review_${Date.now()}_${Math.random().toString(36).substring(2, 11)}`,
+        commitHash: '',
+        status: 'completed' as const,
+        summary: {
+          total: 3,
+          critical: 1,
+          major: 1,
+          minor: 1,
+          suggestion: 0,
+        },
+        processingTimeMs: 100,
+        comments: [
+          {
+            id: uuidv4(),
+            file: 'src/example.ts',
+            line: 10,
+            severity: 'critical' as const,
+            category: 'security',
+            message: '潜在的安全漏洞：未验证用户输入',
+            suggestion: '添加输入验证和清理逻辑',
+            codeSnippet: 'const userInput = req.body.data;',
+          },
+          {
+            id: uuidv4(),
+            file: 'src/example.ts',
+            line: 25,
+            severity: 'major' as const,
+            category: 'performance',
+            message: '性能问题：在循环中进行数据库查询',
+            suggestion: '将查询移到循环外部或使用批量查询',
+            codeSnippet: 'for (const item of items) {\n  await db.query(...);\n}',
+          },
+          {
+            id: uuidv4(),
+            file: 'src/utils.ts',
+            line: 5,
+            severity: 'minor' as const,
+            category: 'maintainability',
+            message: '代码可读性：变量名不够清晰',
+            suggestion: '使用更具描述性的变量名',
+            codeSnippet: 'const x = getData();',
+          },
+        ],
+      };
+    }
 
   /**
    * 从数据库配置创建 Git 客户端
-   * @param config 数据库配置对象
-   * @returns Git 客户端实例
    */
   private async createGitClientFromConfig(config: any) {
     const { createGitClientConfigFromDb, createGitClient } = await import('@/lib/git/client');
@@ -216,7 +246,6 @@ class WorkerProcess {
    */
   private createTaskProcessor() {
     const diffParser = createDiffParser();
-    // const aiReviewer = createAIReviewer(); // 暂时注释，等待 AI 客户端接入
 
     /**
      * 任务处理函数
@@ -246,71 +275,103 @@ class WorkerProcess {
 
         const gitClient = await this.createGitClientFromConfig(config);
         const codeAnalyzer = createCodeAnalyzer(gitClient, diffParser);
-        const commentPublisher = createCommentPublisher(gitClient);
+        
+        // 根据通知配置创建 CommentPublisher
+        const commentPublisher = createCommentPublisher(gitClient, {
+          enabled: config.notificationConfig?.email?.enabled ?? false,
+          recipients: config.notificationConfig?.email?.recipients ?? [],
+          smtpHost: process.env.SMTP_HOST,
+          smtpPort: parseInt(process.env.SMTP_PORT ?? '587'),
+          smtpUser: process.env.SMTP_USER,
+          smtpPassword: process.env.SMTP_PASSWORD,
+        });
+        
         const commit = await this.buildCommitInfo(task);
 
         taskLogger.debug('开始代码分析');
         const analysis = await codeAnalyzer.analyze(commit);
         
         taskLogger.info('代码分析完成', {
-          filesCount: analysis.codeFiles.length,
-          batchesCount: analysis.batches.length,
-          totalAdditions: analysis.diff.totalAdditions,
-          totalDeletions: analysis.diff.totalDeletions,
+          filesCount: analysis.codeFiles?.length ?? 0,
+          batchesCount: analysis.batches?.length ?? 0,
+          totalAdditions: analysis.diff?.totalAdditions ?? 0,
+          totalDeletions: analysis.diff?.totalDeletions ?? 0,
         });
+
+        // 处理空提交
+        if (!this.hasFileChanges(analysis)) {
+          await this.handleEmptyCommit(commit, taskLogger);
+          return;
+        }
+
+        const startTime = Date.now();
 
         // 临时使用模拟的 AI 审查结果，等待真实 AI 客户端接入
         taskLogger.debug('开始 AI 审查（模拟）');
         const reviewResult = this.createMockReviewResult();
 
-        taskLogger.info('AI 审查完成（模拟）', {
-          reviewId: reviewResult.id,
-          totalIssues: reviewResult.summary.total,
-          criticalCount: reviewResult.summary.critical,
-          processingTime: reviewResult.processingTimeMs,
+        taskLogger.debug('保存审查记录');
+        const reviewId = await reviewRepository.createReview({
+          commit,
+          filesChanged: analysis.codeFiles?.length ?? 0,
+          linesAdded: analysis.diff?.totalAdditions ?? 0,
+          linesDeleted: analysis.diff?.totalDeletions ?? 0,
         });
 
-        taskLogger.debug('保存审查记录');
-        await reviewRepository.createReview({
-          id: reviewResult.id,
-          commitHash: commit.hash,
-          branch: commit.branch,
-          repository: commit.repository,
-          authorName: commit.author.name,
-          authorEmail: commit.author.email,
-          filesChanged: analysis.codeFiles.length,
-          linesAdded: analysis.diff.totalAdditions,
-          linesDeleted: analysis.diff.totalDeletions,
-          totalIssues: reviewResult.summary.total,
-          criticalCount: reviewResult.summary.critical,
-          majorCount: reviewResult.summary.major,
-          minorCount: reviewResult.summary.minor,
-          suggestionCount: reviewResult.summary.suggestion,
-          status: 'processing',
-          startedAt: new Date(),
-          processingTimeMs: reviewResult.processingTimeMs,
-        }, reviewResult.comments);
+        const actualProcessingTime = Date.now() - startTime;
+        
+        const finalReviewResult = {
+          ...reviewResult,
+          id: reviewId, // 使用数据库中实际创建的reviewId
+          processingTimeMs: actualProcessingTime,
+        };
+
+        taskLogger.info('AI 审查完成（模拟）', {
+          reviewId,
+          totalIssues: finalReviewResult.summary?.total ?? 0,
+          criticalCount: finalReviewResult.summary?.critical ?? 0,
+          processingTime: finalReviewResult.processingTimeMs,
+        });
+
+        await reviewRepository.updateReviewResult(reviewId, finalReviewResult);
 
         taskLogger.debug('开始发布评论');
-        const publishResult = await commentPublisher.publish(reviewResult, commit);
+        const publishResult = await commentPublisher.publish(finalReviewResult, commit, {
+          gitComment: {
+            enabled: config.notificationConfig?.gitComment?.enabled ?? true,
+            summaryOnly: config.notificationConfig?.gitComment?.summaryOnly ?? false,
+          }
+        });
 
         taskLogger.info('评论发布完成', {
           success: publishResult.success,
-          publishedComments: publishResult.publishedComments,
-          failedComments: publishResult.failedComments,
-          summaryPublished: publishResult.summaryPublished,
-          fallbackUsed: publishResult.fallbackUsed,
+          publishedComments: publishResult.publishedComments ?? 0,
+          failedComments: publishResult.failedComments ?? 0,
+          summaryPublished: publishResult.summaryPublished ?? false,
+          fallbackUsed: publishResult.fallbackUsed ?? false,
         });
 
         const finalStatus = publishResult.success ? 'completed' : 'failed';
         const errorMessage = publishResult.success ? undefined : publishResult.errors?.join('; ');
         
-        await reviewRepository.updateReviewStatus(reviewResult.id, finalStatus, errorMessage);
+        // 发布失败时更新状态，成功时状态已在updateReviewResult中设置
+        if (!publishResult.success) {
+          await reviewRepository.updateReviewStatus(reviewId, finalStatus, errorMessage);
+        }
 
         taskLogger.info(`${WorkerProcess.LOG_ICONS.SUCCESS} 审查任务处理完成`, {
-          reviewId: reviewResult.id,
+          reviewId,
           totalProcessingTime: Date.now() - task.createdAt.getTime(),
+          actualProcessingTime,
           finalStatus,
+        });
+
+        // 标记提交为已处理
+        await this.trackCommitAsProcessed(commit, reviewId);
+
+        taskLogger.debug('提交已标记为已处理', {
+          commitHash: commit.hash,
+          reviewId,
         });
 
       } catch (error) {
@@ -324,26 +385,79 @@ class WorkerProcess {
   /**
    * 构建提交信息
    */
+  /**
+   * 构建提交信息
+   * 优先使用任务中存储的信息，避免重复调用 Git API
+   * @param task 审查任务
+   * @returns 提交信息
+   */
   private async buildCommitInfo(task: ReviewTask): Promise<CommitInfo> {
-    // 这里应该从 Git API 获取完整的提交信息
-    // 为了简化，我们先构建一个基本的提交信息对象
+    // 如果任务中已有完整的作者信息，直接使用
+    if (task.authorName && task.authorEmail) {
+      return this.createCommitInfoFromTask(task);
+    }
+
+    // 如果任务中缺少作者信息，尝试从 Git API 获取
+    try {
+      const config = await configRepository.getConfig(task.repository);
+      const gitClient = await this.createGitClientFromConfig(config);
+      const commitInfo = await gitClient.getCommit(task.commitHash, task.repository);
+
+      return {
+        ...commitInfo,
+        branch: task.branch,
+        repository: task.repository,
+      };
+    } catch (error) {
+      this.processLogger.warn('从 Git API 获取提交信息失败，使用备用信息', {
+        commitHash: task.commitHash,
+        error: error instanceof Error ? error.message : String(error),
+      });
+
+      return this.createFallbackCommitInfo(task);
+    }
+  }
+
+  /**
+   * 从任务数据创建提交信息
+   * @param task 审查任务
+   * @returns 提交信息
+   */
+  private createCommitInfoFromTask(task: ReviewTask): CommitInfo {
     return {
       hash: task.commitHash,
       branch: task.branch,
       repository: task.repository,
       author: {
-        name: 'Unknown', // 实际应该从 Git API 获取
+        name: task.authorName!,
+        email: task.authorEmail!,
+      },
+      message: task.commitMessage ?? 'Commit message unavailable',
+      timestamp: task.createdAt,
+      url: task.commitUrl ?? `https://github.com/${task.repository}/commit/${task.commitHash}`,
+    };
+  }
+
+  /**
+   * 创建备用提交信息
+   * @param task 审查任务
+   * @returns 备用提交信息
+   */
+  private createFallbackCommitInfo(task: ReviewTask): CommitInfo {
+    return {
+      hash: task.commitHash,
+      branch: task.branch,
+      repository: task.repository,
+      author: {
+        name: 'Unknown',
         email: 'unknown@example.com',
       },
-      message: 'Commit message', // 实际应该从 Git API 获取
+      message: 'Commit message unavailable',
       timestamp: task.createdAt,
       url: `https://github.com/${task.repository}/commit/${task.commitHash}`,
     };
   }
 
-  /**
-   * 检查依赖服务
-   */
   /**
    * 检查依赖服务健康状态
    */
@@ -411,7 +525,7 @@ class WorkerProcess {
       });
     });
 
-    this.worker.on('taskCompleted', (task, result) => {
+    this.worker.on('taskCompleted', (task) => {
       this.processLogger.info('任务处理完成', {
         taskId: task.id,
         commitHash: task.commitHash,
@@ -472,7 +586,7 @@ class WorkerProcess {
       this.shutdown(1);
     });
 
-    process.on('unhandledRejection', (reason, promise) => {
+    process.on('unhandledRejection', (reason) => {
       const errorInfo = this.extractErrorInfo(reason);
       this.processLogger.error('未处理的 Promise 拒绝', errorInfo);
     });
@@ -603,11 +717,79 @@ class WorkerProcess {
       }
     }, CONSTANTS.KEEP_ALIVE_INTERVAL_MS);
   }
+
+  /**
+   * 检查是否为空提交
+   * @param analysis 代码分析结果
+   * @returns 是否有文件变更
+   */
+  private hasFileChanges(analysis: any): boolean {
+    return (analysis.codeFiles?.length ?? 0) > 0 || 
+           (analysis.diff?.totalAdditions ?? 0) > 0 || 
+           (analysis.diff?.totalDeletions ?? 0) > 0;
+  }
+
+  /**
+   * 创建空提交的审查结果
+   * @param reviewId 审查ID
+   * @param commitHash 提交哈希
+   * @returns 空审查结果
+   */
+  private createEmptyReviewResult(reviewId: string, commitHash: string) {
+    return {
+      id: reviewId,
+      commitHash,
+      comments: [],
+      summary: { total: 0, critical: 0, major: 0, minor: 0, suggestion: 0 },
+      processingTimeMs: 0,
+      status: 'completed' as const,
+    };
+  }
+
+  /**
+   * 标记提交为已处理
+   * @param commit 提交信息
+   * @param reviewId 审查ID
+   */
+  private async trackCommitAsProcessed(commit: CommitInfo, reviewId: string): Promise<void> {
+    await commitTrackerRepository.trackCommit(commit, {
+      triggerSource: 'polling',
+      reviewId,
+    });
+  }
+
+  /**
+   * 处理空提交（无文件变更）
+   * @param commit 提交信息
+   * @param taskLogger 任务日志记录器
+   * @returns 审查ID
+   */
+  private async handleEmptyCommit(commit: CommitInfo, taskLogger: typeof logger): Promise<string> {
+    taskLogger.info('检测到空提交，跳过 AI 审查', {
+      commitHash: commit.hash,
+      message: commit.message,
+    });
+
+    const reviewId = await reviewRepository.createReview({
+      commit,
+      filesChanged: 0,
+      linesAdded: 0,
+      linesDeleted: 0,
+    });
+
+    const emptyReviewResult = this.createEmptyReviewResult(reviewId, commit.hash);
+    await reviewRepository.updateReviewResult(reviewId, emptyReviewResult);
+    await this.trackCommitAsProcessed(commit, reviewId);
+
+    taskLogger.info(`${WorkerProcess.LOG_ICONS.SUCCESS} 空提交处理完成`, {
+      reviewId,
+      commitHash: commit.hash,
+    });
+
+    return reviewId;
+  }
 }
 
-/**
- * 主函数
- */
 /**
  * 主函数：启动 Worker 进程
  */
@@ -641,9 +823,9 @@ function setupGlobalErrorHandlers(): void {
     process.exit(1);
   });
 
-  process.on('unhandledRejection', (reason, promise) => {
+  process.on('unhandledRejection', (reason) => {
     console.error('未处理的 Promise 拒绝:', reason);
-    logger.error('未处理的 Promise 拒绝', { reason: String(reason), promise });
+    logger.error('未处理的 Promise 拒绝', { reason: String(reason) });
     process.exit(1);
   });
 }

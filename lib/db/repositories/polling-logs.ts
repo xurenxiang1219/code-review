@@ -83,9 +83,13 @@ interface PollingStatsEntity {
  */
 class PollingLogsRepository {
   /**
+   * 提取错误信息的工具方法
+   */
+  private extractErrorMessage(error: unknown): string {
+    return error instanceof Error ? error.message : String(error);
+  }
+  /**
    * 创建轮询日志记录
-   * @param logData 日志数据
-   * @returns 创建的日志记录
    */
   async createLog(logData: {
     repository: string;
@@ -149,7 +153,7 @@ class PollingLogsRepository {
       });
     } catch (error) {
       logger.error('Failed to create polling log', {
-        error: error instanceof Error ? error.message : String(error),
+        error: this.extractErrorMessage(error),
         logData,
       });
       throw error;
@@ -158,9 +162,6 @@ class PollingLogsRepository {
 
   /**
    * 更新轮询日志记录
-   * @param id 日志记录ID
-   * @param updateData 更新数据
-   * @returns 更新后的日志记录
    */
   async updateLog(id: string, updateData: {
     status?: 'running' | 'success' | 'error';
@@ -243,7 +244,7 @@ class PollingLogsRepository {
       return this.entityToLog(updatedEntity);
     } catch (error) {
       logger.error('Failed to update polling log', {
-        error: error instanceof Error ? error.message : String(error),
+        error: this.extractErrorMessage(error),
         id,
         updateData,
       });
@@ -332,9 +333,6 @@ class PollingLogsRepository {
 
   /**
    * 获取轮询统计信息
-   * @param repository 仓库地址
-   * @param branch 分支名称
-   * @returns 统计信息
    */
   async getStats(repository?: string, branch?: string): Promise<PollingStats[]> {
     try {
@@ -359,7 +357,7 @@ class PollingLogsRepository {
       return (entities ?? []).map(entity => this.entityToStats(entity));
     } catch (error) {
       logger.error('Failed to get polling stats', {
-        error: error instanceof Error ? error.message : String(error),
+        error: this.extractErrorMessage(error),
         repository,
         branch,
       });
@@ -368,18 +366,7 @@ class PollingLogsRepository {
   }
 
   /**
-   * 更新统计信息
-   * @param repository 仓库地址
-   * @param branch 分支名称
-   * @param status 扫描状态
-   * @param durationMs 扫描耗时
-   */
-  /**
    * 更新轮询统计数据
-   * @param repository 仓库名称
-   * @param branch 分支名称
-   * @param status 扫描状态
-   * @param durationMs 扫描耗时（毫秒）
    */
   private async updateStats(
     repository: string,
@@ -447,7 +434,7 @@ class PollingLogsRepository {
       );
     } catch (error) {
       logger.error('Failed to update polling stats', {
-        error: error instanceof Error ? error.message : String(error),
+        error: this.extractErrorMessage(error),
         repository,
         branch,
         status,
@@ -458,8 +445,6 @@ class PollingLogsRepository {
 
   /**
    * 将 Date 对象转换为 MySQL TIMESTAMP 格式
-   * @param date Date 对象
-   * @returns MySQL TIMESTAMP 格式字符串
    */
   private formatDateForMySQL(date: Date): string {
     return date.toISOString().slice(0, 19).replace('T', ' ');
@@ -484,8 +469,6 @@ class PollingLogsRepository {
 
   /**
    * 转换数据库实体为统计对象
-   * @param entity 数据库实体
-   * @returns 统计对象
    */
   private entityToStats(entity: PollingStatsEntity): PollingStats {
     return {

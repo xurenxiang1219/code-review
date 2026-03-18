@@ -250,11 +250,9 @@ export class ConcurrencyController {
     // 使用Redis事务确保原子性
     const pipeline = redis.pipeline();
     pipeline.sadd(`${this.keyPrefix}:active`, taskId);
-    pipeline.hmset(lockKey, {
-      taskId,
-      acquiredAt: timestamp.toString(),
-      expireAt: expireAt.toString(),
-    });
+    pipeline.hset(lockKey, 'taskId', taskId);
+    pipeline.hset(lockKey, 'acquiredAt', timestamp.toString());
+    pipeline.hset(lockKey, 'expireAt', expireAt.toString());
     pipeline.expire(lockKey, Math.ceil(this.config.lockExpiration / 1000));
     
     const results = await pipeline.exec();

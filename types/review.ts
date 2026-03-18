@@ -173,6 +173,10 @@ export interface ReviewTask {
   commitHash: string;
   branch: string;
   repository: string;
+  authorName?: string;
+  authorEmail?: string;
+  commitMessage?: string;
+  commitUrl?: string;
   priority: number;
   retryCount: number;
   maxRetries: number;

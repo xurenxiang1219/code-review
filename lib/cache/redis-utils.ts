@@ -399,10 +399,16 @@ export class RedisUtils {
   /**
    * 哈希表批量设置字段
    */
+  /**
+   * 批量设置哈希表字段
+   * @param key Redis 键名
+   * @param fields 字段对象
+   * @returns 操作结果
+   */
   static async hashSetMultiple(key: string, fields: Record<string, string>): Promise<string> {
     try {
       const args = Object.entries(fields).flat();
-      return await RedisClient.executeCommand<string>('hmset', key, ...args);
+      return await RedisClient.executeCommand<string>('hset', key, ...args);
     } catch (error) {
       logger.error('哈希表批量设置失败', { key, fieldCount: Object.keys(fields).length, error });
       throw error;
@@ -424,16 +430,26 @@ export class RedisUtils {
   /**
    * 哈希表获取所有字段
    */
+  /**
+   * 获取哈希表所有字段和值
+   * 兼容 ioredis 的不同返回格式（对象或数组）
+   */
   static async hashGetAll(key: string): Promise<Record<string, string>> {
     try {
-      const result = await RedisClient.executeCommand<string[]>('hgetall', key);
-      const hash: Record<string, string> = {};
+      const result = await RedisClient.executeCommand<Record<string, string> | string[]>('hgetall', key);
       
-      for (let i = 0; i < result.length; i += 2) {
-        hash[result[i]] = result[i + 1];
+      // ioredis 的 hgetall 可能返回对象或数组格式
+      if (Array.isArray(result)) {
+        // 数组格式 [field1, value1, field2, value2, ...] 转换为对象
+        const hash: Record<string, string> = {};
+        for (let i = 0; i < result.length; i += 2) {
+          hash[result[i]] = result[i + 1];
+        }
+        return hash;
       }
       
-      return hash;
+      // 对象格式直接返回，使用空值合并确保返回值安全
+      return result ?? {};
     } catch (error) {
       logger.error('哈希表获取所有字段失败', { key, error });
       throw error;

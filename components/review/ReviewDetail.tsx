@@ -122,9 +122,37 @@ export function ReviewDetail({ review, comments }: ReviewDetailProps) {
                 <span>{statusInfo.text}</span>
               </span>
             </div>
-            <p className="text-gray-600 mb-4">
-              完整提交哈希: <code className="bg-gray-100 px-2 py-1 rounded text-sm">{review.commit_hash}</code>
-            </p>
+            <div className="text-gray-600 mb-4 space-y-2">
+              <p>
+                完整提交哈希: <code className="bg-gray-100 px-2 py-1 rounded text-sm">{review.commit_hash}</code>
+              </p>
+              {review.commit_message && (
+                <div>
+                  <span className="font-medium">提交消息:</span>
+                  <p className="mt-1 text-gray-700 bg-gray-50 p-3 rounded border-l-4 border-blue-200">
+                    {review.commit_message}
+                  </p>
+                </div>
+              )}
+              {review.commit_timestamp && (
+                <p>
+                  <span className="font-medium">提交时间:</span> {formatTime(review.commit_timestamp)}
+                </p>
+              )}
+              {review.commit_url && (
+                <p>
+                  <span className="font-medium">提交链接:</span>{' '}
+                  <a 
+                    href={review.commit_url} 
+                    target="_blank" 
+                    rel="noopener noreferrer"
+                    className="text-blue-600 hover:text-blue-800 underline"
+                  >
+                    查看完整提交
+                  </a>
+                </p>
+              )}
+            </div>
           </div>
         </div>
 

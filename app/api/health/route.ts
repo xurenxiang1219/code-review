@@ -1,5 +1,5 @@
 import { NextRequest } from 'next/server';
-import { handleApiRequest, successResponse } from '@/lib/utils/api-response';
+import { handleApiRequest } from '@/lib/utils/api-response';
 import { createHealthChecker, HealthChecker } from '@/lib/services/health-checker';
 import { logger } from '@/lib/utils/logger';
 import type { SystemHealth } from '@/types/health';

@@ -1,8 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { successResponse, errorResponse, handleApiRequest } from '@/lib/utils/api-response';
+import { handleApiRequest } from '@/lib/utils/api-response';
 import { alertManager } from '@/lib/services/alert-manager';
 import { monitoring } from '@/lib/utils/monitoring';
-import { ApiCode } from '@/lib/constants/api-codes';
 import { authenticateApiRoute } from '@/lib/middleware/api-auth';
 import { Permission } from '@/types/auth';
 
@@ -27,28 +26,24 @@ export async function GET(request: NextRequest) {
 
   return handleApiRequest(async () => {
     const searchParams = request.nextUrl.searchParams;
-    const type = searchParams.get('type') || 'active';
-    const limit = parseInt(searchParams.get('limit') || '50');
+    const type = searchParams.get('type') ?? 'active';
+    const limit = parseInt(searchParams.get('limit') ?? '50');
 
     switch (type) {
       case 'active':
-        const activeAlerts = monitoring.getActiveAlerts();
-        return successResponse(activeAlerts, '获取活跃告警成功');
+        return monitoring.getActiveAlerts();
 
       case 'history':
-        const alertHistory = alertManager.getAlertHistory(limit);
-        return successResponse(alertHistory, '获取告警历史成功');
+        return alertManager.getAlertHistory(limit);
 
       case 'stats':
-        const alertStats = alertManager.getAlertStats();
-        return successResponse(alertStats, '获取告警统计成功');
+        return alertManager.getAlertStats();
 
       case 'policies':
-        const policies = alertManager.getAllAlertPolicies();
-        return successResponse(policies, '获取告警策略成功');
+        return alertManager.getAllAlertPolicies();
 
       default:
-        return errorResponse(ApiCode.BAD_REQUEST, `不支持的类型: ${type}`);
+        throw new Error(`不支持的类型: ${type}`);
     }
   });
 }
@@ -82,54 +77,54 @@ export async function POST(request: NextRequest) {
     const { action, alertId, duration, policy, policyName } = body;
 
     if (!action) {
-      return errorResponse(ApiCode.VALIDATION_ERROR, '缺少action参数');
+      throw new Error('缺少action参数');
     }
 
     switch (action) {
       case 'silence': {
         if (!alertId) {
-          return errorResponse(ApiCode.VALIDATION_ERROR, '缺少alertId参数');
+          throw new Error('缺少alertId参数');
         }
         
-        const silenceDuration = duration || 300000;
+        const silenceDuration = duration ?? 300000;
         await alertManager.silenceAlert(alertId, silenceDuration);
         
-        return successResponse({ alertId, duration: silenceDuration }, '告警已静默');
+        return { alertId, duration: silenceDuration };
       }
 
       case 'unsilence': {
         if (!alertId) {
-          return errorResponse(ApiCode.VALIDATION_ERROR, '缺少alertId参数');
+          throw new Error('缺少alertId参数');
         }
         
         await alertManager.unsilenceAlert(alertId);
-        return successResponse({ alertId }, '告警静默已解除');
+        return { alertId };
       }
 
       case 'addPolicy': {
         if (!policy) {
-          return errorResponse(ApiCode.VALIDATION_ERROR, '缺少policy参数');
+          throw new Error('缺少policy参数');
         }
         
         if (!policy.name || !policy.channels || !Array.isArray(policy.channels)) {
-          return errorResponse(ApiCode.VALIDATION_ERROR, '告警策略格式不正确');
+          throw new Error('告警策略格式不正确');
         }
         
         alertManager.addAlertPolicy(policy);
-        return successResponse({ policyName: policy.name }, '告警策略已添加');
+        return { policyName: policy.name };
       }
 
       case 'removePolicy': {
         if (!policyName) {
-          return errorResponse(ApiCode.VALIDATION_ERROR, '缺少policyName参数');
+          throw new Error('缺少policyName参数');
         }
         
         alertManager.removeAlertPolicy(policyName);
-        return successResponse({ policyName }, '告警策略已移除');
+        return { policyName };
       }
 
       default:
-        return errorResponse(ApiCode.BAD_REQUEST, `不支持的操作: ${action}`);
+        throw new Error(`不支持的操作: ${action}`);
     }
   });
 }

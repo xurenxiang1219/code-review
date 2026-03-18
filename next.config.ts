@@ -1,5 +1,8 @@
 import type { NextConfig } from "next";
 
+// 确保环境变量正确加载
+require('dotenv').config();
+
 const nextConfig: NextConfig = {
   // 启用 standalone 输出模式，用于 Docker 部署
   output: 'standalone',

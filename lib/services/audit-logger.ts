@@ -99,63 +99,85 @@ export class AuditLoggerService {
 
   /**
    * 保存审计日志到数据库
+   * @param auditLog 审计日志对象
    */
   private async saveAuditLog(auditLog: AuditLog): Promise<void> {
-    const query = `
-      INSERT INTO audit_logs (
-        id, user_id, user_email, action, resource, resource_id,
-        method, path, ip, user_agent, request_id, success,
-        error, status_code, duration, created_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    `;
+    try {
+      await db.initialize();
+      
+      const query = `
+        INSERT INTO audit_logs (
+          id, user_id, user_email, action, resource, resource_id,
+          method, path, ip, user_agent, request_id, success,
+          error, status_code, duration, created_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `;
 
-    const values = [
-      auditLog.id,
-      auditLog.userId,
-      auditLog.userEmail,
-      auditLog.action,
-      auditLog.resource,
-      auditLog.resourceId ?? null,
-      auditLog.method,
-      auditLog.path,
-      auditLog.ip,
-      auditLog.userAgent,
-      auditLog.requestId,
-      auditLog.success,
-      auditLog.error ?? null,
-      auditLog.statusCode,
-      auditLog.duration,
-      auditLog.createdAt,
-    ];
+      const values = [
+        auditLog.id,
+        auditLog.userId,
+        auditLog.userEmail,
+        auditLog.action,
+        auditLog.resource,
+        auditLog.resourceId ?? null,
+        auditLog.method,
+        auditLog.path,
+        auditLog.ip,
+        auditLog.userAgent,
+        auditLog.requestId,
+        auditLog.success,
+        auditLog.error ?? null,
+        auditLog.statusCode,
+        auditLog.duration,
+        auditLog.createdAt,
+      ];
 
-    await db.execute(query, values);
+      await db.execute(query, values);
+    } catch (error) {
+      logger.error('保存审计日志到数据库失败', {
+        error: error instanceof Error ? error.message : String(error),
+        auditLogId: auditLog.id,
+      });
+      throw error;
+    }
   }
 
   /**
    * 保存安全事件到数据库
+   * @param event 安全事件对象
    */
   private async saveSecurityEvent(event: SecurityEvent): Promise<void> {
-    const query = `
-      INSERT INTO security_events (
-        id, type, severity, description, ip, user_agent,
-        path, user_id, metadata, created_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    `;
+    try {
+      await db.initialize();
+      
+      const query = `
+        INSERT INTO security_events (
+          id, type, severity, description, ip, user_agent,
+          path, user_id, metadata, created_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `;
 
-    const values = [
-      event.id,
-      event.type,
-      event.severity,
-      event.description,
-      event.ip,
-      event.userAgent ?? null,
-      event.path ?? null,
-      event.userId ?? null,
-      JSON.stringify(event.metadata ?? {}),
-      event.createdAt,
-    ];
+      const values = [
+        event.id,
+        event.type,
+        event.severity,
+        event.description,
+        event.ip,
+        event.userAgent ?? null,
+        event.path ?? null,
+        event.userId ?? null,
+        JSON.stringify(event.metadata ?? {}),
+        event.createdAt,
+      ];
 
-    await db.execute(query, values);
+      await db.execute(query, values);
+    } catch (error) {
+      logger.error('保存安全事件到数据库失败', {
+        error: error instanceof Error ? error.message : String(error),
+        eventId: event.id,
+      });
+      throw error;
+    }
   }
 
   /**
@@ -176,7 +198,7 @@ export class AuditLoggerService {
 
   /**
    * 查询审计日志
-   * @param params - 查询参数
+   * @param params 查询参数
    * @returns 审计日志列表
    */
   async getAuditLogs(params: {
@@ -188,75 +210,85 @@ export class AuditLoggerService {
     page?: number;
     pageSize?: number;
   }): Promise<{ items: AuditLog[]; total: number }> {
-    const conditions: string[] = [];
-    const values: any[] = [];
+    try {
+      await db.initialize();
+      
+      const conditions: string[] = [];
+      const values: any[] = [];
 
-    if (params.userId) {
-      conditions.push('user_id = ?');
-      values.push(params.userId);
+      if (params.userId) {
+        conditions.push('user_id = ?');
+        values.push(params.userId);
+      }
+
+      if (params.action) {
+        conditions.push('action = ?');
+        values.push(params.action);
+      }
+
+      if (params.resource) {
+        conditions.push('resource = ?');
+        values.push(params.resource);
+      }
+
+      if (params.startTime) {
+        conditions.push('created_at >= ?');
+        values.push(params.startTime);
+      }
+
+      if (params.endTime) {
+        conditions.push('created_at <= ?');
+        values.push(params.endTime);
+      }
+
+      const whereClause = conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : '';
+
+      // 查询总数
+      const countQuery = `SELECT COUNT(*) as total FROM audit_logs ${whereClause}`;
+      const countResult = await db.query<{ total: number }>(countQuery, values);
+      const total = countResult[0]?.total ?? 0;
+
+      // 查询数据
+      const page = params.page || 1;
+      const pageSize = params.pageSize || 20;
+      const offset = (page - 1) * pageSize;
+
+      const dataQuery = `
+        SELECT * FROM audit_logs 
+        ${whereClause}
+        ORDER BY created_at DESC
+        LIMIT ? OFFSET ?
+      `;
+
+      const rows = await db.query<any>(dataQuery, [...values, pageSize, offset]);
+
+      const items = (rows || []).map((row: any) => ({
+        id: row.id,
+        userId: row.user_id,
+        userEmail: row.user_email,
+        action: row.action,
+        resource: row.resource,
+        resourceId: row.resource_id,
+        method: row.method,
+        path: row.path,
+        ip: row.ip,
+        userAgent: row.user_agent,
+        requestId: row.request_id,
+        success: row.success,
+        error: row.error,
+        statusCode: row.status_code,
+        duration: row.duration,
+        createdAt: new Date(row.created_at),
+      }));
+
+      return { items, total };
+    } catch (error) {
+      logger.error('查询审计日志失败', {
+        error: error instanceof Error ? error.message : String(error),
+        params,
+      });
+      return { items: [], total: 0 };
     }
-
-    if (params.action) {
-      conditions.push('action = ?');
-      values.push(params.action);
-    }
-
-    if (params.resource) {
-      conditions.push('resource = ?');
-      values.push(params.resource);
-    }
-
-    if (params.startTime) {
-      conditions.push('created_at >= ?');
-      values.push(params.startTime);
-    }
-
-    if (params.endTime) {
-      conditions.push('created_at <= ?');
-      values.push(params.endTime);
-    }
-
-    const whereClause = conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : '';
-
-    // 查询总数
-    const countQuery = `SELECT COUNT(*) as total FROM audit_logs ${whereClause}`;
-    const countResult = await db.query<{ total: number }>(countQuery, values);
-    const total = countResult[0].total;
-
-    // 查询数据
-    const page = params.page || 1;
-    const pageSize = params.pageSize || 20;
-    const offset = (page - 1) * pageSize;
-
-    const dataQuery = `
-      SELECT * FROM audit_logs 
-      ${whereClause}
-      ORDER BY created_at DESC
-      LIMIT ? OFFSET ?
-    `;
-
-    const rows = await db.query<any>(dataQuery, [...values, pageSize, offset]);
-
-    const items = rows.map((row: any) => ({
-      id: row.id,
-      userId: row.user_id,
-      userEmail: row.user_email,
-      action: row.action,
-      resource: row.resource,
-      resourceId: row.resource_id,
-      method: row.method,
-      path: row.path,
-      ip: row.ip,
-      userAgent: row.user_agent,
-      requestId: row.request_id,
-      success: row.success,
-      error: row.error,
-      statusCode: row.status_code,
-      duration: row.duration,
-      createdAt: new Date(row.created_at),
-    }));
-
-    return { items, total };
   }
 }
 

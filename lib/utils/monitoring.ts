@@ -300,6 +300,11 @@ export class MonitoringSystem extends EventEmitter {
    * 
    * @param name - 指标名称
    */
+  /**
+   * 获取指标的最新值
+   * @param name 指标名称
+   * @returns 最新指标值，如果不存在则返回null
+   */
   getLatestMetricValue(name: string): number | null {
     const metrics = this.metrics.get(name);
     if (!metrics || metrics.length === 0) {
@@ -307,6 +312,34 @@ export class MonitoringSystem extends EventEmitter {
     }
     
     return metrics[metrics.length - 1].value;
+  }
+
+  /**
+   * 从Redis获取指标的最新值
+   * @param name 指标名称
+   * @returns 最新指标值，如果不存在则返回null
+   */
+  async getLatestMetricValueFromRedis(name: string): Promise<number | null> {
+    try {
+      const redis = await RedisClient.getInstance();
+      const key = `${this.config.redisKeyPrefix}metrics:${name}`;
+      
+      // 获取最新的指标值（按时间戳倒序）
+      const results = await redis.zrevrange(key, 0, 0, 'WITHSCORES');
+      
+      if (results.length === 0) {
+        return null;
+      }
+      
+      const metricData = JSON.parse(results[0]);
+      return metricData?.value ?? null;
+    } catch (error) {
+      this.monitoringLogger.error('从Redis获取指标失败', { 
+        name, 
+        error: error instanceof Error ? error.message : String(error) 
+      });
+      return null;
+    }
   }
 
   /**

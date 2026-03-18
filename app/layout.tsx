@@ -1,6 +1,8 @@
 import type { Metadata, Viewport } from 'next';
 import { AuthProvider } from '@/lib/contexts/auth-context';
 import { Navigation } from '@/components/layout/Navigation';
+import { AppInitializer } from '@/components/layout/AppInitializer';
+import '@/lib/init/server'; // 服务端自动初始化
 import './globals.css';
 
 export const metadata: Metadata = {
@@ -34,6 +36,9 @@ export default function RootLayout({
     <html lang="zh-CN">
       <body className="antialiased bg-gray-50 min-h-screen">
         <AuthProvider>
+          {/* 应用初始化组件 */}
+          <AppInitializer />
+          
           {/* 导航栏 */}
           <Navigation />
           

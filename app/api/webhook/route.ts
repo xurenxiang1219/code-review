@@ -1,7 +1,6 @@
 import { NextRequest } from 'next/server';
 import { createWebhookListenerFromEnv } from '@/lib/services/webhook-listener';
-import { successResponse, errorResponse } from '@/lib/utils/api-response';
-import { ApiCode } from '@/lib/constants/api-codes';
+import { handleApiRequest } from '@/lib/utils/api-response';
 import { logger } from '@/lib/utils/logger';
 import { createWebhookRateLimiter, createRateLimitMiddleware } from '@/lib/utils/rate-limit-enhanced';
 import { createWebhookConcurrencyController } from '@/lib/utils/concurrency-control';
@@ -78,22 +77,22 @@ const concurrencyController = createWebhookConcurrencyController();
  * }
  */
 export async function POST(request: NextRequest) {
-  const requestId = uuidv4();
-  const startTime = Date.now();
-  
-  const reqLogger = logger.child({ 
-    requestId, 
-    endpoint: '/api/webhook',
-    method: 'POST' 
-  });
+  return handleApiRequest(async () => {
+    const requestId = uuidv4();
+    const startTime = Date.now();
+    
+    const reqLogger = logger.child({ 
+      requestId, 
+      endpoint: '/api/webhook',
+      method: 'POST' 
+    });
 
-  reqLogger.info('Webhook 请求接收');
+    reqLogger.info('Webhook 请求接收');
 
-  try {
     // 获取客户端IP用于速率限制
     const clientIp = request.headers.get('x-forwarded-for')?.split(',')[0]?.trim() 
-      || request.headers.get('x-real-ip') 
-      || 'unknown';
+      ?? request.headers.get('x-real-ip') 
+      ?? 'unknown';
 
     // 应用速率限制
     const rateLimitResult = await rateLimitMiddleware(request, clientIp);
@@ -104,19 +103,7 @@ export async function POST(request: NextRequest) {
         error: rateLimitResult.error,
       });
       
-      return new Response(JSON.stringify({
-        code: ApiCode.RATE_LIMIT_EXCEEDED,
-        msg: rateLimitResult.error || 'Webhook请求频率超限',
-        data: null,
-        timestamp: Date.now(),
-        requestId,
-      }), {
-        status: 429,
-        headers: {
-          'Content-Type': 'application/json',
-          ...rateLimitResult.headers,
-        },
-      });
+      throw new Error(rateLimitResult.error ?? 'Webhook请求频率超限');
     }
 
     // 应用并发控制
@@ -133,11 +120,7 @@ export async function POST(request: NextRequest) {
           queueLength: concurrencyResult.queueLength,
         });
         
-        return errorResponse(
-          ApiCode.INTERNAL_ERROR,
-          '系统繁忙，请稍后重试',
-          503
-        );
+        throw new Error('系统繁忙，请稍后重试');
       }
     }
 
@@ -145,90 +128,36 @@ export async function POST(request: NextRequest) {
       // 创建 Webhook Listener 实例
       const listener = createWebhookListenerFromEnv();
 
-    // 处理 webhook 请求
-    const result = await listener.handleWebhook(request);
+      // 处理 webhook 请求
+      const result = await listener.handleWebhook(request);
 
     // 检查处理结果
     if (!result.success) {
-      // 根据错误代码返回相应的错误响应
-      switch (result.code) {
-        case 'EMPTY_PAYLOAD':
-          return errorResponse(
-            ApiCode.BAD_REQUEST,
-            result.message,
-            400
-          );
-        
-        case 'MISSING_SIGNATURE':
-        case 'INVALID_SIGNATURE':
-          return errorResponse(
-            ApiCode.INVALID_WEBHOOK_SIGNATURE,
-            result.message,
-            401
-          );
-        
-        case 'INVALID_JSON':
-          return errorResponse(
-            ApiCode.BAD_REQUEST,
-            result.message,
-            400
-          );
-        
-        default:
-          return errorResponse(
-            ApiCode.INTERNAL_ERROR,
-            result.message || '处理 webhook 请求失败',
-            500
-          );
-      }
+      throw new Error(result.message ?? '处理 webhook 请求失败');
     }
 
-    // 构建响应数据
-    const responseData = {
-      taskIds: result.taskIds || [],
-      totalCommits: result.taskIds?.length || 0,
-      enqueuedCommits: result.taskIds?.length || 0,
-      skippedCommits: 0,
-    };
+      // 构建响应数据
+      const responseData = {
+        taskIds: result.taskIds ?? [],
+        totalCommits: result.taskIds?.length ?? 0,
+        enqueuedCommits: result.taskIds?.length ?? 0,
+        skippedCommits: 0,
+      };
 
-    const duration = Date.now() - startTime;
-    reqLogger.info('Webhook 处理成功', {
-      taskIds: responseData.taskIds,
-      totalCommits: responseData.totalCommits,
-      duration,
-    });
+      const duration = Date.now() - startTime;
+      reqLogger.info('Webhook 处理成功', {
+        taskIds: responseData.taskIds,
+        totalCommits: responseData.totalCommits,
+        duration,
+      });
 
-    // 返回成功响应（202 Accepted 表示已接受请求，正在处理）
-    const response = successResponse(responseData, result.message, 202);
-    
-    // 添加速率限制头部
-    Object.entries(rateLimitResult.headers).forEach(([key, value]) => {
-      response.headers.set(key, value);
-    });
-    
-    return response;
+      return responseData;
 
     } finally {
       // 释放并发控制权限
       await concurrencyController.release(requestId);
     }
-
-  } catch (error) {
-    const duration = Date.now() - startTime;
-    const errorMessage = error instanceof Error ? error.message : String(error);
-    
-    reqLogger.error('Webhook 处理异常', {
-      error: errorMessage,
-      stack: error instanceof Error ? error.stack : undefined,
-      duration,
-    });
-
-    return errorResponse(
-      ApiCode.INTERNAL_ERROR,
-      `处理 webhook 请求时发生错误: ${errorMessage}`,
-      500
-    );
-  }
+  });
 }
 
 /**
@@ -240,20 +169,20 @@ export async function POST(request: NextRequest) {
  * @returns API 响应
  */
 export async function GET(request: NextRequest) {
-  const requestId = uuidv4();
-  const reqLogger = logger.child({ 
-    requestId, 
-    endpoint: '/api/webhook',
-    method: 'GET' 
-  });
+  return handleApiRequest(async () => {
+    const requestId = uuidv4();
+    const reqLogger = logger.child({ 
+      requestId, 
+      endpoint: '/api/webhook',
+      method: 'GET' 
+    });
 
-  reqLogger.info('Webhook 配置查询');
+    reqLogger.info('Webhook 配置查询');
 
-  try {
     // 返回 webhook 配置信息（不包含敏感信息）
     const config = {
-      provider: process.env.GIT_PROVIDER || 'github',
-      targetBranch: process.env.GIT_TARGET_BRANCH || 'uat',
+      provider: process.env.GIT_PROVIDER ?? 'github',
+      targetBranch: process.env.GIT_TARGET_BRANCH ?? 'uat',
       autoEnqueue: process.env.WEBHOOK_AUTO_ENQUEUE !== 'false',
       endpoint: `${request.nextUrl.origin}/api/webhook`,
       supportedProviders: ['github', 'gitlab', 'generic'],
@@ -266,17 +195,8 @@ export async function GET(request: NextRequest) {
 
     reqLogger.info('Webhook 配置返回', { provider: config.provider });
 
-    return successResponse(config, 'Webhook 配置信息');
-  } catch (error) {
-    const errorMessage = error instanceof Error ? error.message : String(error);
-    reqLogger.error('获取配置失败', { error: errorMessage });
-    
-    return errorResponse(
-      ApiCode.INTERNAL_ERROR,
-      '获取 webhook 配置失败',
-      500
-    );
-  }
+    return config;
+  });
 }
 
 /**

@@ -20,8 +20,14 @@ interface DatabaseConfig {
 /**
  * 获取数据库配置
  * 从环境变量读取数据库连接参数
+ * @returns DatabaseConfig 数据库配置对象
  */
 function getDatabaseConfig(): DatabaseConfig {
+  // 确保加载环境变量文件
+  if (!process.env.DB_HOST) {
+    require('dotenv').config();
+  }
+
   return {
     host: process.env.DB_HOST || 'localhost',
     port: parseInt(process.env.DB_PORT || '3306'),

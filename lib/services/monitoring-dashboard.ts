@@ -117,7 +117,7 @@ export class MonitoringDashboardService {
     const cacheKey = 'dashboard_metrics';
     const cached = this.metricsCache.get(cacheKey);
     
-    if (cached && Date.now() - cached.timestamp < this.cacheTimeout) {
+    if (cached?.timestamp && Date.now() - cached.timestamp < this.cacheTimeout) {
       return cached.data;
     }
 
@@ -248,117 +248,170 @@ export class MonitoringDashboardService {
    * 收集仪表板指标数据
    */
   private async collectDashboardMetrics(): Promise<DashboardMetrics> {
-    const [
-      alertStats,
-      systemMetrics,
-    ] = await Promise.all([
-      alertManager.getAlertStats(),
-      this.collectSystemMetrics(),
-    ]);
+    this.dashboardLogger.debug('开始收集仪表板指标数据');
+    
+    try {
+      const systemMetrics = await this.collectSystemMetrics();
+      this.dashboardLogger.debug('系统指标收集完成', { systemMetrics });
+      
+      const alertStats = alertManager.getAlertStats();
+      this.dashboardLogger.debug('告警统计获取完成', { alertStats });
 
-    return {
-      overview: {
-        totalRequests: systemMetrics.totalRequests,
-        successRate: systemMetrics.successRate,
-        avgProcessingTime: systemMetrics.avgProcessingTime,
-        currentConcurrency: systemMetrics.currentConcurrency,
-        queueLength: systemMetrics.queueLength,
-      },
-      performance: {
-        aiApiCalls: systemMetrics.aiApiCalls,
-        database: systemMetrics.database,
-        redis: systemMetrics.redis,
-      },
-      business: {
-        reviews: systemMetrics.reviews,
-        issues: systemMetrics.issues,
-      },
-      alerts: {
-        active: alertStats.total,
-        resolved: 0, // 需要从历史记录计算
-        silenced: alertStats.silencedCount,
-        bySeverity: alertStats.bySeverity,
-      },
-      timestamp: Date.now(),
-    };
+      const result = {
+        overview: {
+          totalRequests: systemMetrics.totalRequests,
+          successRate: systemMetrics.successRate,
+          avgProcessingTime: systemMetrics.avgProcessingTime,
+          currentConcurrency: systemMetrics.currentConcurrency,
+          queueLength: systemMetrics.queueLength,
+        },
+        performance: {
+          aiApiCalls: systemMetrics.aiApiCalls,
+          database: systemMetrics.database,
+          redis: systemMetrics.redis,
+        },
+        business: {
+          reviews: systemMetrics.reviews,
+          issues: systemMetrics.issues,
+        },
+        alerts: {
+          active: alertStats.total,
+          resolved: 0,
+          silenced: alertStats.silencedCount,
+          bySeverity: alertStats.bySeverity,
+        },
+        timestamp: Date.now(),
+      };
+
+      this.dashboardLogger.debug('仪表板指标数据构建完成', { result });
+      return result;
+      
+    } catch (error) {
+      this.dashboardLogger.error('收集仪表板指标数据失败', { error });
+      throw error;
+    }
   }
   /**
    * 收集系统指标
    */
   private async collectSystemMetrics(): Promise<any> {
-    // 获取基础指标
-    const totalRequests = monitoring.getLatestMetricValue('total_requests') || 0;
-    const successfulRequests = monitoring.getLatestMetricValue('successful_requests') || 0;
-    const avgProcessingTime = monitoring.getLatestMetricValue('avg_processing_time') || 0;
-    const currentConcurrency = monitoring.getLatestMetricValue('concurrent_reviews') || 0;
-    const queueLength = monitoring.getLatestMetricValue('review_queue_length') || 0;
-
-    // 计算成功率
-    const successRate = totalRequests > 0 ? (successfulRequests / totalRequests) * 100 : 100;
-
-    // AI API调用统计
-    const aiApiTotal = monitoring.getLatestMetricValue('ai_api_calls_total') || 0;
-    const aiApiSuccess = monitoring.getLatestMetricValue('ai_api_calls_success') || 0;
-    const aiApiFailure = monitoring.getLatestMetricValue('ai_api_calls_failure') || 0;
-    const aiApiAvgTime = monitoring.getLatestMetricValue('ai_api_response_time_avg') || 0;
-
-    // 数据库统计
-    const dbConnections = monitoring.getLatestMetricValue('db_connections_active') || 0;
-    const dbAvgQueryTime = monitoring.getLatestMetricValue('db_query_time_avg') || 0;
-    const dbSlowQueries = monitoring.getLatestMetricValue('db_slow_queries') || 0;
-
-    // Redis统计
-    const redisConnections = monitoring.getLatestMetricValue('redis_connections_active') || 0;
-    const redisAvgTime = monitoring.getLatestMetricValue('redis_response_time_avg') || 0;
-    const redisMemory = monitoring.getLatestMetricValue('redis_memory_usage') || 0;
-
-    // 业务指标
-    const reviewsTotal = monitoring.getLatestMetricValue('reviews_total') || 0;
-    const reviewsCompleted = monitoring.getLatestMetricValue('reviews_completed') || 0;
-    const reviewsFailed = monitoring.getLatestMetricValue('reviews_failed') || 0;
-    const avgIssuesPerReview = monitoring.getLatestMetricValue('avg_issues_per_review') || 0;
-
-    // 问题分布
-    const criticalIssues = monitoring.getLatestMetricValue('issues_critical') || 0;
-    const majorIssues = monitoring.getLatestMetricValue('issues_major') || 0;
-    const minorIssues = monitoring.getLatestMetricValue('issues_minor') || 0;
-    const suggestions = monitoring.getLatestMetricValue('issues_suggestions') || 0;
-
-    return {
+    this.dashboardLogger.debug('开始收集系统指标');
+    
+    // 获取基础指标（从Redis获取实际数据）
+    const [
       totalRequests,
-      successRate,
+      successfulRequests,
       avgProcessingTime,
       currentConcurrency,
       queueLength,
+      // AI API调用统计
+      aiApiTotal,
+      aiApiSuccess,
+      aiApiFailure,
+      aiApiAvgTime,
+      // 数据库统计
+      dbConnections,
+      dbAvgQueryTime,
+      dbSlowQueries,
+      // Redis统计
+      redisConnections,
+      redisAvgTime,
+      redisMemory,
+      redisHealthy,
+      // 业务指标
+      reviewsTotal,
+      reviewsCompleted,
+      reviewsFailed,
+      reviewsPending,
+      avgIssuesPerReview,
+      successRateFromMetrics,
+      // 问题分布
+      criticalIssues,
+      majorIssues,
+      minorIssues,
+      suggestions,
+    ] = await Promise.all([
+      monitoring.getLatestMetricValueFromRedis('total_requests'),
+      monitoring.getLatestMetricValueFromRedis('successful_requests'),
+      monitoring.getLatestMetricValueFromRedis('avg_processing_time'),
+      monitoring.getLatestMetricValueFromRedis('concurrent_reviews'),
+      monitoring.getLatestMetricValueFromRedis('review_queue_length'),
+      monitoring.getLatestMetricValueFromRedis('ai_api_calls_total'),
+      monitoring.getLatestMetricValueFromRedis('ai_api_calls_success'),
+      monitoring.getLatestMetricValueFromRedis('ai_api_calls_failure'),
+      monitoring.getLatestMetricValueFromRedis('ai_api_response_time_avg'),
+      monitoring.getLatestMetricValueFromRedis('db_connections_active'),
+      monitoring.getLatestMetricValueFromRedis('db_query_time_avg'),
+      monitoring.getLatestMetricValueFromRedis('db_slow_queries'),
+      monitoring.getLatestMetricValueFromRedis('redis_connections_active'),
+      monitoring.getLatestMetricValueFromRedis('redis_response_time_avg'),
+      monitoring.getLatestMetricValueFromRedis('redis_memory_usage'),
+      monitoring.getLatestMetricValueFromRedis('redis_healthy'),
+      monitoring.getLatestMetricValueFromRedis('reviews_total'),
+      monitoring.getLatestMetricValueFromRedis('reviews_completed'),
+      monitoring.getLatestMetricValueFromRedis('reviews_failed'),
+      monitoring.getLatestMetricValueFromRedis('reviews_pending'),
+      monitoring.getLatestMetricValueFromRedis('avg_issues_per_review'),
+      monitoring.getLatestMetricValueFromRedis('review_success_rate'),
+      monitoring.getLatestMetricValueFromRedis('issues_critical'),
+      monitoring.getLatestMetricValueFromRedis('issues_major'),
+      monitoring.getLatestMetricValueFromRedis('issues_minor'),
+      monitoring.getLatestMetricValueFromRedis('issues_suggestions'),
+    ]);
+
+    this.dashboardLogger.debug('Redis指标获取完成', {
+      reviewsTotal,
+      reviewsCompleted,
+      reviewsFailed,
+      totalRequests,
+      successfulRequests,
+    });
+
+    // 计算成功率（如果Redis中没有，则计算）
+    const calculatedSuccessRate = (totalRequests ?? 0) > 0 
+      ? ((successfulRequests ?? 0) / (totalRequests ?? 0)) * 100 
+      : 100;
+
+    const result = {
+      totalRequests: totalRequests ?? 0,
+      successRate: successRateFromMetrics ?? calculatedSuccessRate,
+      avgProcessingTime: avgProcessingTime ?? 0,
+      currentConcurrency: currentConcurrency ?? 0,
+      queueLength: queueLength ?? 0,
       aiApiCalls: {
-        total: aiApiTotal,
-        success: aiApiSuccess,
-        failure: aiApiFailure,
-        avgResponseTime: aiApiAvgTime,
+        total: aiApiTotal ?? 0,
+        success: aiApiSuccess ?? 0,
+        failure: aiApiFailure ?? 0,
+        avgResponseTime: aiApiAvgTime ?? 0,
       },
       database: {
-        connections: dbConnections,
-        avgQueryTime: dbAvgQueryTime,
-        slowQueries: dbSlowQueries,
+        connections: dbConnections ?? 0,
+        avgQueryTime: dbAvgQueryTime ?? 0,
+        slowQueries: dbSlowQueries ?? 0,
       },
       redis: {
-        connections: redisConnections,
-        avgResponseTime: redisAvgTime,
-        memoryUsage: redisMemory,
+        connections: redisConnections ?? 0,
+        avgResponseTime: redisAvgTime ?? 0,
+        memoryUsage: redisMemory ?? 0,
+        healthy: redisHealthy ?? 1,
       },
       reviews: {
-        total: reviewsTotal,
-        completed: reviewsCompleted,
-        failed: reviewsFailed,
-        avgIssuesPerReview,
+        total: reviewsTotal ?? 0,
+        completed: reviewsCompleted ?? 0,
+        failed: reviewsFailed ?? 0,
+        pending: reviewsPending ?? 0,
+        avgIssuesPerReview: avgIssuesPerReview ?? 0,
       },
       issues: {
-        critical: criticalIssues,
-        major: majorIssues,
-        minor: minorIssues,
-        suggestions,
+        critical: criticalIssues ?? 0,
+        major: majorIssues ?? 0,
+        minor: minorIssues ?? 0,
+        suggestions: suggestions ?? 0,
       },
     };
+
+    this.dashboardLogger.debug('系统指标收集完成', { result });
+    return result;
   }
 
   /**

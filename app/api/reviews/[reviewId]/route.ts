@@ -1,7 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { reviewRepository } from '@/lib/db/repositories/review';
-import { successResponse, notFoundResponse, errorResponse } from '@/lib/utils/api-response';
-import { ApiCode } from '@/lib/constants/api-codes';
+import { handleApiRequest } from '@/lib/utils/api-response';
 import { logger } from '@/lib/utils/logger';
 import { authenticateApiRoute } from '@/lib/middleware/api-auth';
 import { Permission } from '@/types/auth';
@@ -86,26 +85,26 @@ export async function GET(
     return auth;
   }
 
-  const { reviewId } = await params;
-  const { requestId } = auth;
-  
-  const reqLogger = logger.child({ 
-    requestId, 
-    endpoint: `/api/reviews/${reviewId}`,
-    method: 'GET',
-    reviewId,
-    userId: auth.user.id,
-  });
+  return handleApiRequest(async () => {
+    const { reviewId } = await params;
+    const { requestId } = auth;
+    
+    const reqLogger = logger.child({ 
+      requestId, 
+      endpoint: `/api/reviews/${reviewId}`,
+      method: 'GET',
+      reviewId,
+      userId: auth.user.id,
+    });
 
-  reqLogger.info('审查详情查询请求');
+    reqLogger.info('审查详情查询请求');
 
-  try {
     // 查询审查记录
     const review = await reviewRepository.getReviewById(reviewId);
 
     if (!review) {
       reqLogger.warn('审查记录不存在', { reviewId });
-      return notFoundResponse('审查记录不存在');
+      throw new Error('审查记录不存在');
     }
 
     reqLogger.debug('审查记录查询成功', {
@@ -129,13 +128,9 @@ export async function GET(
     });
 
     // 返回审查详情和评论
-    return successResponse({
+    return {
       review,
       comments,
-    }, '查询成功');
-  } catch (error) {
-    const errorMessage = error instanceof Error ? error.message : String(error);
-    reqLogger.error('查询审查详情失败', { error: errorMessage });
-    return errorResponse(ApiCode.INTERNAL_ERROR, '查询审查详情失败', 500);
-  }
+    };
+  });
 }

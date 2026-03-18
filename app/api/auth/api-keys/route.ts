@@ -2,7 +2,6 @@ import { NextRequest } from 'next/server';
 import { z } from 'zod';
 import { 
   handleApiRequest, 
-  successResponse, 
   validationErrorResponse,
   ApiError 
 } from '@/lib/utils/api-response';
@@ -64,7 +63,7 @@ export async function GET(request: NextRequest) {
       createdAt: key.createdAt,
     }));
 
-    return successResponse(sanitizedKeys, 'API Key 列表获取成功');
+    return sanitizedKeys;
   });
 }
 
@@ -179,7 +178,7 @@ export async function POST(request: NextRequest) {
     });
 
     // 返回 API Key 和信息（注意：API Key 只返回一次）
-    return successResponse({
+    return {
       apiKey: result.apiKey,
       info: {
         id: result.info.id,
@@ -189,6 +188,6 @@ export async function POST(request: NextRequest) {
         expiresAt: result.info.expiresAt,
         createdAt: result.info.createdAt,
       },
-    }, 'API Key 创建成功', 201);
+    };
   });
 }

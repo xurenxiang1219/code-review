@@ -2,7 +2,6 @@ import { NextRequest, NextResponse } from 'next/server';
 import { z } from 'zod';
 import { 
   handleApiRequest, 
-  successResponse, 
   validationErrorResponse,
   ApiError,
 } from '@/lib/utils/api-response';
@@ -147,7 +146,7 @@ export async function GET(request: NextRequest) {
       // 脱敏处理
       const sanitizedConfigs = configs.map(config => sanitizeConfig(config));
 
-      return successResponse(sanitizedConfigs, '配置列表获取成功');
+      return sanitizedConfigs;
     });
   }
 
@@ -190,7 +189,7 @@ export async function GET(request: NextRequest) {
       pollingEnabled: config.pollingEnabled 
     });
 
-    return successResponse(sanitizeConfig(config), '配置查询成功');
+    return sanitizeConfig(config);
   });
 }
 
@@ -289,7 +288,7 @@ export async function PUT(request: NextRequest) {
       pollingEnabled: updatedConfig.pollingEnabled 
     });
 
-    return successResponse(sanitizeConfig(updatedConfig), '配置更新成功');
+    return sanitizeConfig(updatedConfig);
   });
 }
 
@@ -345,7 +344,7 @@ export async function POST(request: NextRequest) {
       configId: defaultConfig.id 
     });
 
-    return successResponse(sanitizeConfig(defaultConfig), '默认配置创建成功', 201);
+    return sanitizeConfig(defaultConfig);
   });
 }
 
@@ -397,6 +396,6 @@ export async function DELETE(request: NextRequest) {
 
     reqLogger.info('配置删除成功');
 
-    return successResponse(null, '配置删除成功');
+    return null;
   });
 }

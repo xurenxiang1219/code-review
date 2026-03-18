@@ -20,8 +20,14 @@ interface RedisConfig {
 
 /**
  * 获取 Redis 配置
+ * @returns RedisConfig Redis配置对象
  */
 function getRedisConfig(): RedisConfig {
+  // 确保加载环境变量文件
+  if (!process.env.REDIS_HOST) {
+    require('dotenv').config();
+  }
+
   return {
     host: process.env.REDIS_HOST || 'localhost',
     port: parseInt(process.env.REDIS_PORT || '6379'),

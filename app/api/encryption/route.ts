@@ -1,11 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { 
-  successResponse, 
-  errorResponse, 
   handleApiRequest,
-  internalErrorResponse,
 } from '@/lib/utils/api-response';
-import { ApiCode } from '@/lib/constants/api-codes';
 import { keyRotationService } from '@/lib/services/key-rotation';
 import { databaseEncryptionService } from '@/lib/services/database-encryption';
 import { logger } from '@/lib/utils/logger';
@@ -57,15 +53,15 @@ export async function GET(request: NextRequest) {
           lastRotation: rotationHistory.find(r => r.keyType === 'log')?.completedAt,
         },
       },
-      encryptedTables: tableConfigs.map(config => ({
+      encryptedTables: (tableConfigs ?? []).map(config => ({
         tableName: config.tableName,
-        sensitiveFieldsCount: config.sensitiveFields.length,
-        sensitiveFields: config.sensitiveFields,
+        sensitiveFieldsCount: config.sensitiveFields?.length ?? 0,
+        sensitiveFields: config.sensitiveFields ?? [],
       })),
-      recentRotations: rotationHistory.slice(0, 5),
+      recentRotations: (rotationHistory ?? []).slice(0, 5),
     };
 
-    return successResponse(encryptionStatus);
+    return encryptionStatus;
   });
 }
 
@@ -87,11 +83,9 @@ export async function POST(request: NextRequest) {
     const body = await request.json();
     const { keyType, force = false } = body;
 
-    if (!keyType || !['config', 'database', 'log'].includes(keyType)) {
-      return errorResponse(
-        ApiCode.BAD_REQUEST,
-        '无效的密钥类型，支持的类型：config, database, log'
-      );
+    const validKeyTypes = ['config', 'database', 'log'];
+    if (!keyType || !validKeyTypes.includes(keyType)) {
+      throw new Error(`无效的密钥类型，支持的类型：${validKeyTypes.join(', ')}`);
     }
 
     logger.encryption('开始密钥轮换', keyType, {
@@ -100,14 +94,8 @@ export async function POST(request: NextRequest) {
     });
 
     // 检查是否需要轮换（除非强制执行）
-    if (!force) {
-      const rotationNeeded = await keyRotationService.shouldRotateKey(keyType);
-      if (!rotationNeeded) {
-        return errorResponse(
-          ApiCode.BAD_REQUEST,
-          '密钥尚未到轮换时间，如需强制轮换请设置 force: true'
-        );
-      }
+    if (!force && !await keyRotationService.shouldRotateKey(keyType)) {
+      throw new Error('密钥尚未到轮换时间，如需强制轮换请设置 force: true');
     }
 
     try {
@@ -119,12 +107,10 @@ export async function POST(request: NextRequest) {
         userId: auth.user.id,
         rotationId: rotationResult.id,
         affectedRecords: rotationResult.affectedRecords,
-        duration: rotationResult.completedAt 
-          ? rotationResult.completedAt.getTime() - rotationResult.startedAt.getTime()
-          : 0,
+        duration: rotationResult.completedAt?.getTime() - rotationResult.startedAt.getTime(),
       });
 
-      return successResponse(rotationResult, '密钥轮换完成');
+      return rotationResult;
     } catch (error) {
       logger.error('密钥轮换失败', {
         keyType,
@@ -132,7 +118,7 @@ export async function POST(request: NextRequest) {
         error: error instanceof Error ? error.message : String(error),
       });
 
-      return internalErrorResponse('密钥轮换失败');
+      throw new Error('密钥轮换失败');
     }
   });
 }
@@ -162,17 +148,17 @@ export async function PUT(request: NextRequest) {
       logger.encryption('加密数据完整性验证完成', 'system', {
         userId: auth.user.id,
         valid: validationResult.valid,
-        errorsCount: validationResult.errors.length,
+        errorsCount: validationResult.errors?.length ?? 0,
       });
 
-      return successResponse(validationResult, '数据完整性验证完成');
+      return validationResult;
     } catch (error) {
       logger.error('数据完整性验证失败', {
         userId: auth.user.id,
         error: error instanceof Error ? error.message : String(error),
       });
 
-      return internalErrorResponse('数据完整性验证失败');
+      throw new Error('数据完整性验证失败');
     }
   });
 }

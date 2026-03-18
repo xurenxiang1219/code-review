@@ -37,7 +37,7 @@ function getWorkerConfig(): WorkerProcessConfig {
     taskTimeout: parseInt(process.env.WORKER_TASK_TIMEOUT || '600000'), // 10分钟
     gracefulShutdownTimeout: parseInt(process.env.WORKER_SHUTDOWN_TIMEOUT || '30000'), // 30秒
     healthCheckInterval: parseInt(process.env.WORKER_HEALTH_CHECK_INTERVAL || '30000'), // 30秒
-    logLevel: process.env.LOG_LEVEL || 'info',
+    logLevel: process.env.LOG_LEVEL || 'debug', // 改为 debug 级别
     enableMetrics: process.env.WORKER_ENABLE_METRICS === 'true',
   };
 }
@@ -169,6 +169,34 @@ class WorkerProcess {
    * 创建任务处理器
    */
   /**
+   * 日志图标常量
+   */
+  private static readonly LOG_ICONS = {
+    START: '🚀',
+    SUCCESS: '✅',
+    ERROR: '❌',
+  } as const;
+
+  /**
+   * 创建模拟的 AI 审查结果（临时方法，等待真实 AI 客户端接入）
+   * @returns 模拟的审查结果
+   */
+  private createMockReviewResult() {
+    return {
+      id: `review_${Date.now()}_${Math.random().toString(36).substring(2, 11)}`,
+      summary: {
+        total: 0,
+        critical: 0,
+        major: 0,
+        minor: 0,
+        suggestion: 0,
+      },
+      processingTimeMs: 100,
+      comments: [],
+    };
+  }
+
+  /**
    * 从数据库配置创建 Git 客户端
    * @param config 数据库配置对象
    * @returns Git 客户端实例
@@ -200,11 +228,15 @@ class WorkerProcess {
         commitHash: task.commitHash,
       });
 
-      taskLogger.info('开始处理审查任务', {
+      const taskInfo = {
         branch: task.branch,
         repository: task.repository,
         retryCount: task.retryCount,
-      });
+        priority: task.priority,
+        createdAt: task.createdAt,
+      };
+
+      taskLogger.info(`${WorkerProcess.LOG_ICONS.START} 开始处理审查任务`, taskInfo);
 
       try {
         const config = await configRepository.getConfig(task.repository);
@@ -229,18 +261,7 @@ class WorkerProcess {
 
         // 临时使用模拟的 AI 审查结果，等待真实 AI 客户端接入
         taskLogger.debug('开始 AI 审查（模拟）');
-        const reviewResult = {
-          id: `review_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`,
-          summary: {
-            total: 0,
-            critical: 0,
-            major: 0,
-            minor: 0,
-            suggestion: 0,
-          },
-          processingTimeMs: 100,
-          comments: [],
-        };
+        const reviewResult = this.createMockReviewResult();
 
         taskLogger.info('AI 审查完成（模拟）', {
           reviewId: reviewResult.id,
@@ -286,14 +307,15 @@ class WorkerProcess {
         
         await reviewRepository.updateReviewStatus(reviewResult.id, finalStatus, errorMessage);
 
-        taskLogger.info('审查任务处理完成', {
+        taskLogger.info(`${WorkerProcess.LOG_ICONS.SUCCESS} 审查任务处理完成`, {
           reviewId: reviewResult.id,
           totalProcessingTime: Date.now() - task.createdAt.getTime(),
+          finalStatus,
         });
 
       } catch (error) {
         const errorInfo = this.extractErrorInfo(error);
-        taskLogger.error('审查任务处理失败', errorInfo);
+        taskLogger.error(`${WorkerProcess.LOG_ICONS.ERROR} 审查任务处理失败`, errorInfo);
         throw error;
       }
     };

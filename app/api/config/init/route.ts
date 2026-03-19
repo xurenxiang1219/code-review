@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { configRepository } from '@/lib/db/repositories/config';
 import { ApiCode } from '@/lib/constants/api-codes';
 import { logger } from '@/lib/utils/logger';
+import { apiRoute, apiRoutes } from '@/lib/utils/api-response';
 
 /**
  * 配置初始化 API
@@ -113,97 +114,81 @@ function handleError(error: unknown, reqLogger: any, operation: string, requestI
  * 
  * 获取仓库配置（无需认证）
  */
-export async function GET(request: NextRequest) {
+const GET = apiRoute(async (request: NextRequest) => {
   const validation = validateAndCreateLogger(request, 'GET');
   if ('error' in validation) {
-    return validation.error;
+    throw new Error(validation.error.status === 404 ? '配置不存在' : '缺少仓库参数');
   }
 
   const { requestId, reqLogger, repository } = validation;
 
-  try {
-    reqLogger.info('获取配置初始化请求', { repository });
+  reqLogger.info('获取配置初始化请求', { repository });
 
-    // 直接使用数据库查询，跳过复杂的仓库层
-    const { db } = await import('@/lib/db/client');
-    await db.initialize();
+  // 直接使用数据库查询，跳过复杂的仓库层
+  const { db } = await import('@/lib/db/client');
+  await db.initialize();
 
-    const result = await db.queryOne(
-      'SELECT * FROM review_config WHERE repository = ?',
-      [repository]
-    );
+  const result = await db.queryOne(
+    'SELECT * FROM review_config WHERE repository = ?',
+    [repository]
+  );
 
-    if (!result) {
-      return createErrorResponse(ApiCode.NOT_FOUND, '配置不存在', requestId, 404);
-    }
-
-    const config = transformDatabaseResult(result);
-
-    reqLogger.info('配置查询成功', { repository, configId: config.id });
-    return createSuccessResponse(config, '查询成功', requestId);
-  } catch (error) {
-    return handleError(error, reqLogger, '查询配置', requestId);
+  if (!result) {
+    throw new Error('配置不存在');
   }
-}
+
+  const config = transformDatabaseResult(result);
+
+  reqLogger.info('配置查询成功', { repository, configId: config.id });
+  return config;
+});
 
 /**
  * POST /api/config/init
  * 
  * 创建默认配置（无需认证）
  */
-export async function POST(request: NextRequest) {
+const POST = apiRoute(async (request: NextRequest) => {
   const validation = validateAndCreateLogger(request, 'POST');
   if ('error' in validation) {
-    return validation.error;
+    throw new Error('缺少仓库参数');
   }
 
   const { requestId, reqLogger, repository } = validation;
 
-  try {
-    reqLogger.info('创建默认配置请求', { repository });
+  reqLogger.info('创建默认配置请求', { repository });
 
-    const existingConfig = await configRepository.getConfigWithoutDecryption(repository);
-    if (existingConfig) {
-      return NextResponse.json({
-        code: ApiCode.CONFLICT,
-        msg: '配置已存在',
-        data: existingConfig,
-        timestamp: Date.now(),
-        requestId,
-      });
-    }
-
-    const config = await configRepository.createDefaultConfigWithoutEncryption(repository);
-
-    reqLogger.info('默认配置创建成功', { repository, configId: config.id });
-    return createSuccessResponse(config, '创建成功', requestId);
-  } catch (error) {
-    return handleError(error, reqLogger, '创建默认配置', requestId);
+  const existingConfig = await configRepository.getConfigWithoutDecryption(repository);
+  if (existingConfig) {
+    throw new Error('配置已存在');
   }
-}
+
+  const config = await configRepository.createDefaultConfigWithoutEncryption(repository);
+
+  reqLogger.info('默认配置创建成功', { repository, configId: config.id });
+  return config;
+});
 
 /**
  * PUT /api/config/init
  * 
  * 更新配置（无需认证，仅用于初始化）
  */
-export async function PUT(request: NextRequest) {
+const PUT = apiRoute(async (request: NextRequest) => {
   const validation = validateAndCreateLogger(request, 'PUT');
   if ('error' in validation) {
-    return validation.error;
+    throw new Error('缺少仓库参数');
   }
 
   const { requestId, reqLogger, repository } = validation;
 
-  try {
-    const body = await request.json();
-    reqLogger.info('更新配置初始化请求', { repository });
+  const body = await request.json();
+  reqLogger.info('更新配置初始化请求', { repository });
 
-    const config = await configRepository.updateConfig(repository, body);
+  const config = await configRepository.updateConfig(repository, body);
 
-    reqLogger.info('配置更新成功', { repository, configId: config.id });
-    return createSuccessResponse(config, '更新成功', requestId);
-  } catch (error) {
-    return handleError(error, reqLogger, '更新配置', requestId);
-  }
-}
+  reqLogger.info('配置更新成功', { repository, configId: config.id });
+  return config;
+});
+
+export { GET, POST, PUT };

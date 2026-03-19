@@ -719,7 +719,7 @@ export class GitClient {
       'dockerfile': 'dockerfile',
     };
 
-    return languageMap[extension || ''] || 'text';
+    return languageMap[extension ?? ''] ?? 'text';
   }
 
   /**
@@ -821,7 +821,7 @@ export function createGitClientConfig(): GitClientConfig {
  * 在开发环境中提供容错机制，避免启动时的配置检查失败
  * @returns Git 客户端实例
  */
-function createDefaultGitClient(): GitClient {
+export function createDefaultGitClient(): GitClient {
   const isDevelopment = process.env.NODE_ENV !== 'production';
   
   try {

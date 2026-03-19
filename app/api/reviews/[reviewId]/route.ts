@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { reviewRepository } from '@/lib/db/repositories/review';
-import { handleApiRequest } from '@/lib/utils/api-response';
+import { apiRoute } from '@/lib/utils/api-response';
 import { logger } from '@/lib/utils/logger';
 import { authenticateApiRoute } from '@/lib/middleware/api-auth';
 import { Permission } from '@/types/auth';
@@ -72,65 +72,60 @@ import { db } from '@/lib/db/client';
  *   "requestId": "uuid"
  * }
  */
-export async function GET(
-  request: NextRequest,
-  { params }: { params: Promise<{ reviewId: string }> }
-) {
+export const GET = apiRoute(async (request: NextRequest, { params }: { params: Promise<{ reviewId: string }> }) => {
   const auth = await authenticateApiRoute(request, {
     requiredPermissions: [Permission.REVIEW_READ],
     enableRateLimit: true,
   });
   
   if (auth instanceof NextResponse) {
-    return auth;
+    throw new Error('认证失败');
   }
 
-  return handleApiRequest(async () => {
-    const { reviewId } = await params;
-    const { requestId } = auth;
-    
-    const reqLogger = logger.child({ 
-      requestId, 
-      endpoint: `/api/reviews/${reviewId}`,
-      method: 'GET',
-      reviewId,
-      userId: auth.user.id,
-    });
-
-    reqLogger.info('审查详情查询请求');
-
-    // 查询审查记录
-    const review = await reviewRepository.getReviewById(reviewId);
-
-    if (!review) {
-      reqLogger.warn('审查记录不存在', { reviewId });
-      throw new Error('审查记录不存在');
-    }
-
-    reqLogger.debug('审查记录查询成功', {
-      reviewId,
-      status: review.status,
-      totalIssues: review.total_issues,
-    });
-
-    // 查询审查评论
-    await db.initialize();
-    const comments = await db.query(
-      `SELECT * FROM review_comments 
-       WHERE review_id = ? 
-       ORDER BY severity DESC, file_path ASC, line_number ASC`,
-      [reviewId]
-    );
-
-    reqLogger.info('审查详情查询成功', {
-      reviewId,
-      commentCount: comments.length,
-    });
-
-    // 返回审查详情和评论
-    return {
-      review,
-      comments,
-    };
+  const { reviewId } = await params;
+  const { requestId } = auth;
+  
+  const reqLogger = logger.child({ 
+    requestId, 
+    endpoint: `/api/reviews/${reviewId}`,
+    method: 'GET',
+    reviewId,
+    userId: auth.user.id,
   });
-}
+
+  reqLogger.info('审查详情查询请求');
+
+  // 查询审查记录
+  const review = await reviewRepository.getReviewById(reviewId);
+
+  if (!review) {
+    reqLogger.warn('审查记录不存在', { reviewId });
+    throw new Error('审查记录不存在');
+  }
+
+  reqLogger.debug('审查记录查询成功', {
+    reviewId,
+    status: review.status,
+    totalIssues: review.total_issues,
+  });
+
+  // 查询审查评论
+  await db.initialize();
+  const comments = await db.query(
+    `SELECT * FROM review_comments 
+     WHERE review_id = ? 
+     ORDER BY severity DESC, file_path ASC, line_number ASC`,
+    [reviewId]
+  );
+
+  reqLogger.info('审查详情查询成功', {
+    reviewId,
+    commentCount: comments.length,
+  });
+
+  // 返回审查详情和评论
+  return {
+    review,
+    comments,
+  };
+});

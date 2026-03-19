@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { handleApiRequest } from '@/lib/utils/api-response';
+import { apiRoute } from '@/lib/utils/api-response';
 import { monitoring } from '@/lib/utils/monitoring';
-import { authenticateApiRoute } from '@/lib/middleware/api-auth';
+import { checkAuth } from '@/lib/utils/api-auth-helper';
 import { Permission } from '@/types/auth';
 import type { AlertRule } from '@/lib/utils/monitoring';
 
@@ -10,123 +10,79 @@ import type { AlertRule } from '@/lib/utils/monitoring';
  * 
  * GET /api/monitoring/rules
  */
-export async function GET(request: NextRequest) {
-  const auth = await authenticateApiRoute(request, {
-    requiredPermissions: [Permission.CONFIG_READ],
-    enableRateLimit: true,
-  });
-  
-  if (auth instanceof NextResponse) {
-    return auth;
-  }
+export const GET = apiRoute(async (request: NextRequest) => {
+  await checkAuth(request, [Permission.CONFIG_READ]);
 
-  return handleApiRequest(async () => {
-    const rules: AlertRule[] = [];
-    return rules;
-  });
-}
+  const rules: AlertRule[] = [];
+  return rules;
+});
 
 /**
  * 添加或更新告警规则
  * 
  * POST /api/monitoring/rules
- * 
- * 请求体：
- * {
- *   "name": "rule_name",
- *   "metricName": "metric_name",
- *   "condition": "gt|lt|eq|gte|lte",
- *   "threshold": 100,
- *   "duration": 300000,
- *   "severity": "info|warning|error|critical",
- *   "message": "Alert message template",
- *   "enabled": true
- * }
  */
-export async function POST(request: NextRequest) {
-  const auth = await authenticateApiRoute(request, {
-    requiredPermissions: [Permission.CONFIG_WRITE],
-    enableRateLimit: true,
-  });
+export const POST = apiRoute(async (request: NextRequest) => {
+  await checkAuth(request, [Permission.CONFIG_WRITE]);
+
+  const body = await request?.json?.() ?? {};
   
-  if (auth instanceof NextResponse) {
-    return auth;
+  const requiredFields = ['name', 'metricName', 'condition', 'threshold', 'severity', 'message'];
+  const missingFields = requiredFields.filter(field => !body?.[field]);
+  
+  if (missingFields.length > 0) {
+    throw new Error(`缺少必要字段: ${missingFields.join(', ')}`);
   }
 
-  return handleApiRequest(async () => {
-    const body = await request.json();
-    
-    const requiredFields = ['name', 'metricName', 'condition', 'threshold', 'severity', 'message'];
-    const missingFields = requiredFields.filter(field => !body[field]);
-    
-    if (missingFields.length > 0) {
-      throw new Error(`缺少必要字段: ${missingFields.join(', ')}`);
-    }
+  // 验证条件类型
+  const validConditions = ['gt', 'lt', 'eq', 'gte', 'lte'];
+  if (!validConditions.includes(body?.condition)) {
+    throw new Error(`无效的条件类型: ${body?.condition}，支持的类型: ${validConditions.join(', ')}`);
+  }
 
-    // 验证条件类型
-    const validConditions = ['gt', 'lt', 'eq', 'gte', 'lte'];
-    if (!validConditions.includes(body.condition)) {
-      throw new Error(`无效的条件类型: ${body.condition}，支持的类型: ${validConditions.join(', ')}`);
-    }
+  // 验证严重程度
+  const validSeverities = ['info', 'warning', 'error', 'critical'];
+  if (!validSeverities.includes(body?.severity)) {
+    throw new Error(`无效的严重程度: ${body?.severity}，支持的类型: ${validSeverities.join(', ')}`);
+  }
 
-    // 验证严重程度
-    const validSeverities = ['info', 'warning', 'error', 'critical'];
-    if (!validSeverities.includes(body.severity)) {
-      throw new Error(`无效的严重程度: ${body.severity}，支持的类型: ${validSeverities.join(', ')}`);
-    }
+  // 验证阈值是数字
+  if (typeof body?.threshold !== 'number') {
+    throw new Error('threshold必须是数字类型');
+  }
 
-    // 验证阈值是数字
-    if (typeof body.threshold !== 'number') {
-      throw new Error('threshold必须是数字类型');
-    }
+  const rule: AlertRule = {
+    name: body?.name,
+    metricName: body?.metricName,
+    condition: body?.condition,
+    threshold: body?.threshold,
+    duration: body?.duration ?? 300000, // 默认5分钟
+    severity: body?.severity,
+    message: body?.message,
+    enabled: body?.enabled !== false, // 默认启用
+  };
 
-    const rule: AlertRule = {
-      name: body.name,
-      metricName: body.metricName,
-      condition: body.condition,
-      threshold: body.threshold,
-      duration: body.duration ?? 300000, // 默认5分钟
-      severity: body.severity,
-      message: body.message,
-      enabled: body.enabled !== false, // 默认启用
-    };
+  monitoring.addAlertRule(rule);
 
-    monitoring.addAlertRule(rule);
-
-    return rule;
-  });
-}
+  return rule;
+});
 
 /**
  * 删除告警规则
  * 
  * DELETE /api/monitoring/rules
- * 
- * 请求体：
- * {
- *   "ruleName": "rule_name"
- * }
  */
-export async function DELETE(request: NextRequest) {
-  const auth = await authenticateApiRoute(request, {
-    requiredPermissions: [Permission.CONFIG_WRITE],
-    enableRateLimit: true,
-  });
-  
-  if (auth instanceof NextResponse) {
-    return auth;
+export const DELETE = apiRoute(async (request: NextRequest) => {
+  await checkAuth(request, [Permission.CONFIG_WRITE]);
+
+  const body = await request?.json?.() ?? {};
+  const { ruleName } = body;
+
+  if (!ruleName) {
+    throw new Error('缺少ruleName参数');
   }
 
-  return handleApiRequest(async () => {
-    const body = await request.json();
-    const { ruleName } = body;
+  monitoring.removeAlertRule(ruleName);
 
-    if (!ruleName) {
-      throw new Error('缺少ruleName参数');
-    }
-
-    monitoring.removeAlertRule(ruleName);
-
-    return { ruleName };
-  });
-}
+  return { ruleName };
+});

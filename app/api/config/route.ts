@@ -1,8 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { z } from 'zod';
 import { 
-  handleApiRequest, 
-  validationErrorResponse,
+  apiRoute,
   ApiError,
 } from '@/lib/utils/api-response';
 import { ApiCode } from '@/lib/constants/api-codes';
@@ -103,23 +102,25 @@ const UpdateConfigSchema = z.object({
  * 配置脱敏处理
  */
 function sanitizeConfig(config: any) {
+  const aiModel = config?.aiModel ?? {};
   return {
     ...config,
     aiModel: {
-      ...config.aiModel,
-      apiKey: config.aiModel.apiKey ? '***已配置***' : undefined,
+      ...aiModel,
+      apiKey: aiModel?.apiKey ? '***已配置***' : undefined,
     },
   };
 }
 
 /**
  * GET /api/config/all - 获取所有配置
+ * GET /api/config - 获取单个配置
  * 
  * 响应:
- * - 200: 返回所有配置列表
+ * - 200: 返回配置
  * - 500: 服务器错误
  */
-export async function GET(request: NextRequest) {
+export const GET = apiRoute(async (request: NextRequest) => {
   // 检查路径是否为 /api/config/all
   if (request.nextUrl.pathname === '/api/config/all') {
     const auth = await authenticateApiRouteSimple(request, {
@@ -127,27 +128,25 @@ export async function GET(request: NextRequest) {
     });
     
     if (auth instanceof NextResponse) {
-      return auth;
+      throw new Error('认证失败');
     }
 
-    return handleApiRequest(async () => {
-      const reqLogger = logger.child({ 
-        operation: 'getAllConfigs',
-        requestId: auth.requestId,
-        userId: auth.user.id,
-      });
-
-      reqLogger.info('开始获取所有配置');
-
-      const configs = await configRepository.getAllConfigs();
-
-      reqLogger.info('所有配置获取成功', { count: configs.length });
-
-      // 脱敏处理
-      const sanitizedConfigs = configs.map(config => sanitizeConfig(config));
-
-      return sanitizedConfigs;
+    const reqLogger = logger.child({ 
+      operation: 'getAllConfigs',
+      requestId: auth.requestId,
+      userId: auth.user.id,
     });
+
+    reqLogger.info('开始获取所有配置');
+
+    const configs = await configRepository.getAllConfigs();
+
+    reqLogger.info('所有配置获取成功', { count: configs?.length ?? 0 });
+
+    // 脱敏处理
+    const sanitizedConfigs = (configs ?? []).map(config => sanitizeConfig(config));
+
+    return sanitizedConfigs;
   }
 
   // 原有的单个配置查询逻辑
@@ -156,42 +155,40 @@ export async function GET(request: NextRequest) {
   });
   
   if (auth instanceof NextResponse) {
-    return auth;
+    throw new Error('认证失败');
   }
 
-  return handleApiRequest(async () => {
-    const searchParams = request.nextUrl.searchParams;
-    const repository = searchParams.get('repository');
+  const searchParams = request.nextUrl.searchParams;
+  const repository = searchParams.get('repository');
 
-    if (!repository) {
-      throw new ApiError(ApiCode.MISSING_REQUIRED_FIELD, '缺少 repository 参数');
-    }
+  if (!repository) {
+    throw new ApiError(ApiCode.MISSING_REQUIRED_FIELD, '缺少 repository 参数');
+  }
 
-    const reqLogger = logger.child({ 
-      operation: 'getConfig',
-      repository,
-      requestId: auth.requestId,
-      userId: auth.user.id,
-    });
-
-    reqLogger.info('开始查询配置');
-
-    // 查询配置
-    const config = await configRepository.getConfig(repository);
-
-    if (!config) {
-      reqLogger.warn('配置不存在');
-      throw new ApiError(ApiCode.CONFIG_NOT_FOUND, '该仓库的配置不存在');
-    }
-
-    reqLogger.info('配置查询成功', { 
-      configId: config.id,
-      pollingEnabled: config.pollingEnabled 
-    });
-
-    return sanitizeConfig(config);
+  const reqLogger = logger.child({ 
+    operation: 'getConfig',
+    repository,
+    requestId: auth.requestId,
+    userId: auth.user.id,
   });
-}
+
+  reqLogger.info('开始查询配置');
+
+  // 查询配置
+  const config = await configRepository.getConfig(repository);
+
+  if (!config) {
+    reqLogger.warn('配置不存在');
+    throw new ApiError(ApiCode.CONFIG_NOT_FOUND, '该仓库的配置不存在');
+  }
+
+  reqLogger.info('配置查询成功', { 
+    configId: config.id,
+    pollingEnabled: config.pollingEnabled 
+  });
+
+  return sanitizeConfig(config);
+});
 
 /**
  * PUT /api/config - 更新配置
@@ -215,82 +212,80 @@ export async function GET(request: NextRequest) {
  * - 404: 配置不存在时会自动创建默认配置
  * - 500: 服务器错误
  */
-export async function PUT(request: NextRequest) {
+export const PUT = apiRoute(async (request: NextRequest) => {
   const auth = await authenticateApiRouteSimple(request, {
     requiredPermissions: [Permission.CONFIG_WRITE],
   });
   
   if (auth instanceof NextResponse) {
-    return auth;
+    throw new Error('认证失败');
   }
 
-  return handleApiRequest(async () => {
-    const searchParams = request.nextUrl.searchParams;
-    const repository = searchParams.get('repository');
+  const searchParams = request.nextUrl.searchParams;
+  const repository = searchParams.get('repository');
 
-    if (!repository) {
-      throw new ApiError(ApiCode.MISSING_REQUIRED_FIELD, '缺少 repository 参数');
-    }
+  if (!repository) {
+    throw new ApiError(ApiCode.MISSING_REQUIRED_FIELD, '缺少 repository 参数');
+  }
 
-    const reqLogger = logger.child({ 
-      operation: 'updateConfig',
-      repository,
-      requestId: auth.requestId,
-      userId: auth.user.id,
-    });
-
-    reqLogger.info('开始更新配置');
-
-    // 解析请求体
-    let requestBody: any;
-    try {
-      requestBody = await request.json();
-    } catch (error) {
-      reqLogger.warn('请求体解析失败', { error });
-      throw new ApiError(ApiCode.INVALID_PARAMETERS, '请求体格式错误');
-    }
-
-    // 验证请求数据
-    const validation = UpdateConfigSchema.safeParse(requestBody);
-    if (!validation.success) {
-      const errors = validation.error.errors.map(err => ({
-        field: err.path.join('.'),
-        message: err.message,
-        code: err.code,
-      }));
-
-      reqLogger.warn('配置验证失败', { errors });
-      return validationErrorResponse(errors);
-    }
-
-    const updateParams: UpdateConfigParams = validation.data;
-
-    // 使用仓库层的验证
-    const repoValidation = configRepository.validateConfig(updateParams);
-    if (!repoValidation.valid) {
-      const errors = repoValidation.errors.map(error => ({
-        field: 'config',
-        message: error,
-      }));
-
-      reqLogger.warn('配置业务验证失败', { errors: repoValidation.errors });
-      return validationErrorResponse(errors);
-    }
-
-    reqLogger.debug('配置验证通过', { updateFields: Object.keys(updateParams) });
-
-    // 更新配置
-    const updatedConfig = await configRepository.updateConfig(repository, updateParams);
-
-    reqLogger.info('配置更新成功', { 
-      configId: updatedConfig.id,
-      updatedFields: Object.keys(updateParams),
-      pollingEnabled: updatedConfig.pollingEnabled 
-    });
-
-    return sanitizeConfig(updatedConfig);
+  const reqLogger = logger.child({ 
+    operation: 'updateConfig',
+    repository,
+    requestId: auth.requestId,
+    userId: auth.user.id,
   });
-}
+
+  reqLogger.info('开始更新配置');
+
+  // 解析请求体
+  let requestBody: any;
+  try {
+    requestBody = await request.json();
+  } catch (error) {
+    reqLogger.warn('请求体解析失败', { error });
+    throw new ApiError(ApiCode.INVALID_PARAMETERS, '请求体格式错误');
+  }
+
+  // 验证请求数据
+  const validation = UpdateConfigSchema.safeParse(requestBody);
+  if (!validation.success) {
+    const errors = validation.error.errors.map(err => ({
+      field: err.path.join('.'),
+      message: err.message,
+      code: err.code,
+    }));
+
+    reqLogger.warn('配置验证失败', { errors });
+    throw new ApiError(ApiCode.INVALID_PARAMETERS, `验证失败: ${errors[0]?.message ?? '参数错误'}`);
+  }
+
+  const updateParams: UpdateConfigParams = validation.data;
+
+  // 使用仓库层的验证
+  const repoValidation = configRepository.validateConfig(updateParams);
+  if (!repoValidation.valid) {
+    const errors = repoValidation.errors.map(error => ({
+      field: 'config',
+      message: error,
+    }));
+
+    reqLogger.warn('配置业务验证失败', { errors: repoValidation.errors });
+    throw new ApiError(ApiCode.INVALID_PARAMETERS, `配置验证失败: ${repoValidation.errors[0] ?? '参数错误'}`);
+  }
+
+  reqLogger.debug('配置验证通过', { updateFields: Object.keys(updateParams) });
+
+  // 更新配置
+  const updatedConfig = await configRepository.updateConfig(repository, updateParams);
+
+  reqLogger.info('配置更新成功', { 
+    configId: updatedConfig.id,
+    updatedFields: Object.keys(updateParams),
+    pollingEnabled: updatedConfig.pollingEnabled 
+  });
+
+  return sanitizeConfig(updatedConfig);
+});
 
 /**
  * POST /api/config - 创建默认配置
@@ -304,49 +299,47 @@ export async function PUT(request: NextRequest) {
  * - 409: 配置已存在
  * - 500: 服务器错误
  */
-export async function POST(request: NextRequest) {
+export const POST = apiRoute(async (request: NextRequest) => {
   const auth = await authenticateApiRouteSimple(request, {
     requiredPermissions: [Permission.CONFIG_WRITE],
   });
   
   if (auth instanceof NextResponse) {
-    return auth;
+    throw new Error('认证失败');
   }
 
-  return handleApiRequest(async () => {
-    const searchParams = request.nextUrl.searchParams;
-    const repository = searchParams.get('repository');
+  const searchParams = request.nextUrl.searchParams;
+  const repository = searchParams.get('repository');
 
-    if (!repository) {
-      throw new ApiError(ApiCode.MISSING_REQUIRED_FIELD, '缺少 repository 参数');
-    }
+  if (!repository) {
+    throw new ApiError(ApiCode.MISSING_REQUIRED_FIELD, '缺少 repository 参数');
+  }
 
-    const reqLogger = logger.child({ 
-      operation: 'createDefaultConfig',
-      repository,
-      requestId: auth.requestId,
-      userId: auth.user.id,
-    });
-
-    reqLogger.info('开始创建默认配置');
-
-    // 检查配置是否已存在
-    const existingConfig = await configRepository.getConfig(repository);
-    if (existingConfig) {
-      reqLogger.warn('配置已存在');
-      throw new ApiError(ApiCode.COMMIT_ALREADY_PROCESSED, '该仓库的配置已存在');
-    }
-
-    // 创建默认配置
-    const defaultConfig = await configRepository.createDefaultConfigWithoutEncryption(repository);
-
-    reqLogger.info('默认配置创建成功', { 
-      configId: defaultConfig.id 
-    });
-
-    return sanitizeConfig(defaultConfig);
+  const reqLogger = logger.child({ 
+    operation: 'createDefaultConfig',
+    repository,
+    requestId: auth.requestId,
+    userId: auth.user.id,
   });
-}
+
+  reqLogger.info('开始创建默认配置');
+
+  // 检查配置是否已存在
+  const existingConfig = await configRepository.getConfig(repository);
+  if (existingConfig) {
+    reqLogger.warn('配置已存在');
+    throw new ApiError(ApiCode.COMMIT_ALREADY_PROCESSED, '该仓库的配置已存在');
+  }
+
+  // 创建默认配置
+  const defaultConfig = await configRepository.createDefaultConfigWithoutEncryption(repository);
+
+  reqLogger.info('默认配置创建成功', { 
+    configId: defaultConfig.id 
+  });
+
+  return sanitizeConfig(defaultConfig);
+});
 
 /**
  * DELETE /api/config - 删除配置
@@ -360,42 +353,40 @@ export async function POST(request: NextRequest) {
  * - 404: 配置不存在
  * - 500: 服务器错误
  */
-export async function DELETE(request: NextRequest) {
+export const DELETE = apiRoute(async (request: NextRequest) => {
   const auth = await authenticateApiRouteSimple(request, {
     requiredPermissions: [Permission.CONFIG_WRITE],
   });
   
   if (auth instanceof NextResponse) {
-    return auth;
+    throw new Error('认证失败');
   }
 
-  return handleApiRequest(async () => {
-    const searchParams = request.nextUrl.searchParams;
-    const repository = searchParams.get('repository');
+  const searchParams = request.nextUrl.searchParams;
+  const repository = searchParams.get('repository');
 
-    if (!repository) {
-      throw new ApiError(ApiCode.MISSING_REQUIRED_FIELD, '缺少 repository 参数');
-    }
+  if (!repository) {
+    throw new ApiError(ApiCode.MISSING_REQUIRED_FIELD, '缺少 repository 参数');
+  }
 
-    const reqLogger = logger.child({ 
-      operation: 'deleteConfig',
-      repository,
-      requestId: auth.requestId,
-      userId: auth.user.id,
-    });
-
-    reqLogger.info('开始删除配置');
-
-    // 删除配置
-    const deleted = await configRepository.deleteConfig(repository);
-
-    if (!deleted) {
-      reqLogger.warn('配置不存在');
-      throw new ApiError(ApiCode.CONFIG_NOT_FOUND, '该仓库的配置不存在');
-    }
-
-    reqLogger.info('配置删除成功');
-
-    return null;
+  const reqLogger = logger.child({ 
+    operation: 'deleteConfig',
+    repository,
+    requestId: auth.requestId,
+    userId: auth.user.id,
   });
-}
+
+  reqLogger.info('开始删除配置');
+
+  // 删除配置
+  const deleted = await configRepository.deleteConfig(repository);
+
+  if (!deleted) {
+    reqLogger.warn('配置不存在');
+    throw new ApiError(ApiCode.CONFIG_NOT_FOUND, '该仓库的配置不存在');
+  }
+
+  reqLogger.info('配置删除成功');
+
+  return null;
+});

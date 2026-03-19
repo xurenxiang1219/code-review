@@ -1,7 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { reviewRepository } from '@/lib/db/repositories/review';
-import { paginatedResponse, errorResponse } from '@/lib/utils/api-response';
-import { ApiCode } from '@/lib/constants/api-codes';
+import { apiRoute } from '@/lib/utils/api-response';
 import { logger } from '@/lib/utils/logger';
 import { authenticateApiRouteSimple } from '@/lib/middleware/api-auth-simple';
 import { Permission } from '@/types/auth';
@@ -74,13 +73,13 @@ import type { ReviewQueryParams } from '@/lib/db/repositories/review';
  *   "requestId": "uuid"
  * }
  */
-export async function GET(request: NextRequest) {
+export const GET = apiRoute(async (request: NextRequest) => {
   const auth = await authenticateApiRouteSimple(request, {
     requiredPermissions: [Permission.REVIEW_READ],
   });
   
   if (auth instanceof NextResponse) {
-    return auth;
+    throw new Error('认证失败');
   }
 
   const { requestId } = auth;
@@ -91,25 +90,19 @@ export async function GET(request: NextRequest) {
     userId: auth.user.id,
   });
 
-  try {
-    const searchParams = request.nextUrl.searchParams;
-    
-    if (searchParams.get('stats') === 'true') {
-      return await handleStatsRequest(reqLogger, requestId);
-    }
-
-    return await handleReviewsListRequest(searchParams, reqLogger);
-  } catch (error) {
-    const errorMessage = error instanceof Error ? error.message : String(error);
-    reqLogger.error('查询审查列表失败', { error: errorMessage });
-    return errorResponse(ApiCode.INTERNAL_ERROR, '查询审查列表失败', 500);
+  const searchParams = request.nextUrl.searchParams;
+  
+  if (searchParams.get('stats') === 'true') {
+    return await handleStatsRequest(reqLogger);
   }
-}
+
+  return await handleReviewsListRequest(searchParams, reqLogger);
+});
 
 /**
  * 处理统计数据请求
  */
-async function handleStatsRequest(reqLogger: any, requestId: string) {
+async function handleStatsRequest(reqLogger: any) {
   reqLogger.info('获取审查统计数据请求');
   
   const [stats, todayStats, firstReview] = await Promise.all([
@@ -120,18 +113,18 @@ async function handleStatsRequest(reqLogger: any, requestId: string) {
     reviewRepository.getReviews({ page: 1, pageSize: 1 }),
   ]);
 
-  const avgIssuesPerReview = stats.completed > 0 
-    ? Math.round((stats.issues.total / stats.completed) * 10) / 10
+  const avgIssuesPerReview = (stats?.completed ?? 0) > 0 
+    ? Math.round(((stats?.issues?.total ?? 0) / stats.completed) * 10) / 10
     : 0;
 
-  const systemUptime = firstReview.items.length > 0 
+  const systemUptime = (firstReview?.items?.length ?? 0) > 0 
     ? new Date(firstReview.items[0].created_at).getTime()
     : Date.now();
 
   const responseData = {
     stats: {
-      totalReviews: stats.total,
-      todayReviews: todayStats.total,
+      totalReviews: stats?.total ?? 0,
+      todayReviews: todayStats?.total ?? 0,
       avgIssuesPerReview,
       systemUptime,
     },
@@ -139,13 +132,7 @@ async function handleStatsRequest(reqLogger: any, requestId: string) {
 
   reqLogger.info('统计数据查询成功', responseData.stats);
   
-  return NextResponse.json({
-    code: ApiCode.SUCCESS,
-    msg: '查询成功',
-    data: responseData,
-    timestamp: Date.now(),
-    requestId,
-  });
+  return responseData;
 }
 
 /**
@@ -155,28 +142,33 @@ async function handleReviewsListRequest(searchParams: URLSearchParams, reqLogger
   reqLogger.info('审查列表查询请求');
 
   const params = parseQueryParams(searchParams, reqLogger);
-  if (params instanceof NextResponse) {
-    return params;
-  }
 
   reqLogger.debug('查询参数解析完成', { params });
 
   const { items, total } = await reviewRepository.getReviews(params);
 
   reqLogger.info('审查列表查询成功', {
-    total,
-    itemCount: items.length,
+    total: total ?? 0,
+    itemCount: items?.length ?? 0,
     page: params.page,
     pageSize: params.pageSize,
   });
 
-  return paginatedResponse(items, params.page!, params.pageSize!, total, '查询成功');
+  return {
+    items: items ?? [],
+    pagination: {
+      page: params.page ?? 1,
+      pageSize: params.pageSize ?? 20,
+      total: total ?? 0,
+      totalPages: Math.ceil((total ?? 0) / (params.pageSize ?? 20)),
+    },
+  };
 }
 
 /**
  * 解析查询参数
  */
-function parseQueryParams(searchParams: URLSearchParams, reqLogger: any): ReviewQueryParams | NextResponse {
+function parseQueryParams(searchParams: URLSearchParams, reqLogger: any): ReviewQueryParams {
   const params: ReviewQueryParams = {};
 
   // 基础参数
@@ -194,20 +186,13 @@ function parseQueryParams(searchParams: URLSearchParams, reqLogger: any): Review
     const validStatuses = ['pending', 'processing', 'completed', 'failed'];
     if (!validStatuses.includes(status)) {
       reqLogger.warn('无效的状态参数', { status });
-      return errorResponse(
-        ApiCode.BAD_REQUEST,
-        `无效的状态值: ${status}，有效值为: ${validStatuses.join(', ')}`,
-        400
-      );
+      throw new Error(`无效的状态值: ${status}，有效值为: ${validStatuses.join(', ')}`);
     }
     params.status = status as 'pending' | 'processing' | 'completed' | 'failed';
   }
 
   // 时间参数
   const timeParseResult = parseTimeParams(searchParams, reqLogger);
-  if (timeParseResult instanceof NextResponse) {
-    return timeParseResult;
-  }
   Object.assign(params, timeParseResult);
 
   // 分页参数
@@ -220,7 +205,7 @@ function parseQueryParams(searchParams: URLSearchParams, reqLogger: any): Review
 /**
  * 解析时间参数
  */
-function parseTimeParams(searchParams: URLSearchParams, reqLogger: any): Partial<ReviewQueryParams> | NextResponse {
+function parseTimeParams(searchParams: URLSearchParams, reqLogger: any): Partial<ReviewQueryParams> {
   const timeParams = [
     { key: 'from', field: 'from' as const, label: '开始时间' },
     { key: 'to', field: 'to' as const, label: '结束时间' }
@@ -234,11 +219,7 @@ function parseTimeParams(searchParams: URLSearchParams, reqLogger: any): Partial
       const date = new Date(timeValue);
       if (isNaN(date.getTime())) {
         reqLogger.warn(`无效的${label}`, { [key]: timeValue });
-        return errorResponse(
-          ApiCode.BAD_REQUEST,
-          `无效的${label}格式，请使用 ISO 8601 格式`,
-          400
-        );
+        throw new Error(`无效的${label}格式，请使用 ISO 8601 格式`);
       }
       result[field] = date;
     }

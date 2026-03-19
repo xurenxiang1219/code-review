@@ -30,7 +30,7 @@ function isValidToken(token: string): boolean {
     const payload = JSON.parse(atob(parts[1]));
     const now = Math.floor(Date.now() / 1000);
     
-    return payload.exp && payload.exp > now;
+    return payload?.exp && payload.exp > now;
   } catch {
     return false;
   }
@@ -66,12 +66,9 @@ function addSecurityHeaders(response: NextResponse): NextResponse {
   response.headers.set('Referrer-Policy', 'strict-origin-when-cross-origin');
   response.headers.set('Permissions-Policy', 'camera=(), microphone=(), geolocation=()');
   
-  const allowedOrigins = process.env.CORS_ALLOWED_ORIGINS?.split(',') || ['*'];
-  if (allowedOrigins.includes('*')) {
-    response.headers.set('Access-Control-Allow-Origin', '*');
-  } else {
-    response.headers.set('Access-Control-Allow-Origin', allowedOrigins[0]);
-  }
+  const allowedOrigins = process.env.CORS_ALLOWED_ORIGINS?.split(',') ?? ['*'];
+  const origin = allowedOrigins.includes('*') ? '*' : allowedOrigins[0];
+  response.headers.set('Access-Control-Allow-Origin', origin);
   
   response.headers.set('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
   response.headers.set('Access-Control-Allow-Headers', 'Content-Type, Authorization, X-API-Key');
@@ -81,11 +78,11 @@ function addSecurityHeaders(response: NextResponse): NextResponse {
 }
 
 /**
- * Next.js 中间件主函数
+ * Next.js 代理主函数
  * @param request - HTTP 请求对象
  * @returns 响应或继续处理
  */
-export async function middleware(request: NextRequest) {
+export async function proxy(request: NextRequest) {
   const { pathname } = request.nextUrl;
   const requestId = crypto.randomUUID();
   
@@ -130,7 +127,7 @@ export async function middleware(request: NextRequest) {
 }
 
 /**
- * 中间件配置
+ * 代理配置
  */
 export const config = {
   matcher: [

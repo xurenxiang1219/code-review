@@ -1,6 +1,7 @@
-import { NextRequest, NextResponse } from 'next/server';
+import { NextRequest } from 'next/server';
 import { initializeApp } from '@/lib/init/app';
 import { logger } from '@/lib/utils/logger';
+import { apiRoute } from '@/lib/utils/api-response';
 
 /**
  * 系统初始化API
@@ -9,33 +10,21 @@ import { logger } from '@/lib/utils/logger';
  * 
  * 执行应用初始化操作（无需认证）
  */
-export async function POST(request: NextRequest) {
+export const POST = apiRoute(async (request: NextRequest) => {
   const initLogger = logger.child({ 
     endpoint: '/api/system/init',
     method: 'POST',
   });
 
-  try {
-    initLogger.info('收到系统初始化请求');
-    
-    await initializeApp();
-    
-    initLogger.info('系统初始化成功');
-    
-    return NextResponse.json({
-      code: 0,
-      msg: '系统初始化成功',
-      timestamp: Date.now(),
-    });
-  } catch (error) {
-    const errorMessage = error instanceof Error ? error.message : String(error);
-    initLogger.error('系统初始化失败', { error: errorMessage });
-    
-    return NextResponse.json({
-      code: 2000,
-      msg: '系统初始化失败',
-      error: errorMessage,
-      timestamp: Date.now(),
-    }, { status: 500 });
-  }
-}
+  initLogger.info('收到系统初始化请求');
+  
+  await initializeApp();
+  
+  initLogger.info('系统初始化成功');
+  
+  return {
+    code: 0,
+    msg: '系统初始化成功',
+    timestamp: Date.now(),
+  };
+});

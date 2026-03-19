@@ -1,5 +1,5 @@
 import { NextRequest } from 'next/server';
-import { handleApiRequest } from '@/lib/utils/api-response';
+import { apiRoute } from '@/lib/utils/api-response';
 import { createHealthChecker, HealthChecker } from '@/lib/services/health-checker';
 import { logger } from '@/lib/utils/logger';
 import type { SystemHealth } from '@/types/health';
@@ -14,52 +14,50 @@ import type { SystemHealth } from '@/types/health';
  * - AI 服务状态
  * - 系统资源使用情况
  */
-export async function GET(request: NextRequest): Promise<Response> {
+export const GET = apiRoute(async (request: NextRequest): Promise<SystemHealth> => {
   const requestLogger = logger.child({ 
     endpoint: '/api/health',
     method: 'GET',
   });
 
-  return handleApiRequest(async (): Promise<SystemHealth> => {
-    requestLogger.info('开始健康检查请求');
+  requestLogger.info('开始健康检查请求');
 
-    // 获取查询参数
-    const searchParams = request.nextUrl.searchParams;
-    const services = searchParams.get('services')?.split(',') || [];
-    const timeout = parseInt(searchParams.get('timeout') || '5000');
+  // 获取查询参数
+  const searchParams = request?.nextUrl?.searchParams;
+  const services = searchParams?.get('services')?.split(',') || [];
+  const timeout = parseInt(searchParams?.get('timeout') ?? '5000');
 
-    // 创建健康检查器
-    const healthChecker = createHealthChecker();
-    
-    // 根据查询参数确定要检查的服务
-    const config = {
-      timeout: Math.min(Math.max(timeout, 1000), 30000), // 限制在 1-30 秒之间
-      checkDatabase: services.length === 0 || services.includes('database'),
-      checkRedis: services.length === 0 || services.includes('redis'),
-      checkAI: services.length === 0 || services.includes('ai'),
-    };
+  // 创建健康检查器
+  const healthChecker = createHealthChecker();
+  
+  // 根据查询参数确定要检查的服务
+  const config = {
+    timeout: Math.min(Math.max(timeout, 1000), 30000), // 限制在 1-30 秒之间
+    checkDatabase: services.length === 0 || services.includes('database'),
+    checkRedis: services.length === 0 || services.includes('redis'),
+    checkAI: services.length === 0 || services.includes('ai'),
+  };
 
-    requestLogger.debug('健康检查配置', {
-      timeout: config.timeout,
-      services: {
-        database: config.checkDatabase,
-        redis: config.checkRedis,
-        ai: config.checkAI,
-      },
-    });
+  requestLogger.debug('健康检查配置', {
+    timeout: config.timeout,
+    services: {
+      database: config.checkDatabase,
+      redis: config.checkRedis,
+      ai: config.checkAI,
+    },
+  });
 
-    // 执行健康检查
-    const healthResult = await healthChecker.checkSystemHealth(config);
+  // 执行健康检查
+  const healthResult = await healthChecker.checkSystemHealth(config);
 
-    requestLogger.info('健康检查完成', {
-      systemStatus: healthResult.status,
-      servicesCount: healthResult.services.length,
-      uptime: healthResult.uptime,
-    });
+  requestLogger.info('健康检查完成', {
+    systemStatus: healthResult?.status,
+    servicesCount: healthResult?.services?.length ?? 0,
+    uptime: healthResult?.uptime,
+  });
 
-    return healthResult;
-  }, '健康检查失败');
-}
+  return healthResult;
+});
 
 /**
  * 简化的健康检查端点
@@ -86,11 +84,11 @@ export async function HEAD(request: NextRequest): Promise<Response> {
     
     const healthResult = await healthChecker.checkSystemHealth(config);
     
-    const isHealthy = healthResult.status === 'healthy';
+    const isHealthy = healthResult?.status === 'healthy';
     const statusCode = isHealthy ? 200 : 503;
 
     requestLogger.debug('简化健康检查完成', {
-      status: healthResult.status,
+      status: healthResult?.status,
       statusCode,
     });
 
@@ -98,7 +96,7 @@ export async function HEAD(request: NextRequest): Promise<Response> {
       status: statusCode,
       headers: {
         'Cache-Control': 'no-cache, no-store, must-revalidate',
-        'X-Health-Status': healthResult.status,
+        'X-Health-Status': healthResult?.status ?? 'unknown',
       },
     });
   } catch (error) {

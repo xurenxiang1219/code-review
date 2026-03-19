@@ -1,4 +1,4 @@
-import { NextResponse } from 'next/server';
+import { NextResponse, NextRequest } from 'next/server';
 import { v4 as uuidv4 } from 'uuid';
 import { ApiCode, ApiCodeType, getApiMessage } from '@/lib/constants/api-codes';
 import { logger } from '@/lib/utils/logger';
@@ -364,6 +364,79 @@ export async function handleApiRequest<T>(
     logger.performance('API Request', duration, { requestId, success });
     logger.clearContext();
   }
+}
+
+/**
+ * 简化的API路由创建器
+ * 
+ * 使用示例：
+ * ```typescript
+ * export const GET = apiRoute(async (request) => {
+ *   return { message: 'Hello World' };
+ * });
+ * ```
+ * 
+ * @param handler - API处理函数
+ * @param options - 可选配置
+ * @returns Next.js API路由处理函数
+ */
+export function apiRoute<T = any>(
+  handler: (request: NextRequest, context?: any) => Promise<T>,
+  options: {
+    errorMessage?: string;
+    enableLogging?: boolean;
+    successMessage?: string;
+  } = {}
+): (request: NextRequest, context?: any) => Promise<NextResponse> {
+  return async (request: NextRequest, context?: any) => {
+    const requestId = uuidv4();
+    
+    // 默认启用日志记录
+    if (options?.enableLogging !== false) {
+      logger.info('API请求', {
+        requestId,
+        method: request?.method,
+        url: request?.url,
+      });
+    }
+    
+    return handleApiRequest(
+      () => handler(request, context),
+      options?.errorMessage,
+      requestId
+    );
+  };
+}
+
+/**
+ * 支持多个HTTP方法的API路由创建器
+ * 
+ * 使用示例：
+ * ```typescript
+ * const { GET, POST } = apiRoutes({
+ *   GET: async (request) => ({ data: 'get' }),
+ *   POST: async (request) => ({ data: 'post' }),
+ * });
+ * 
+ * export { GET, POST };
+ * ```
+ */
+export function apiRoutes<T = any>(
+  handlers: Partial<Record<'GET' | 'POST' | 'PUT' | 'DELETE' | 'PATCH', (request: NextRequest, context?: any) => Promise<T>>>,
+  options: {
+    errorMessage?: string;
+    enableLogging?: boolean;
+  } = {}
+) {
+  const routes: Partial<Record<string, (request: NextRequest, context?: any) => Promise<NextResponse>>> = {};
+
+  for (const [method, handler] of Object.entries(handlers)) {
+    if (handler) {
+      routes[method] = apiRoute(handler, options);
+    }
+  }
+
+  return routes;
 }
 
 /**

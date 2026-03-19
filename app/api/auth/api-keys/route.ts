@@ -2,7 +2,6 @@ import { NextRequest } from 'next/server';
 import { z } from 'zod';
 import { 
   apiRoute, 
-  validationErrorResponse,
   ApiError 
 } from '@/lib/utils/api-response';
 import { ApiCode } from '@/lib/constants/api-codes';
